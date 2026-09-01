@@ -4,6 +4,8 @@ import { state, setActivePack } from '../store.js';
 import { stats, groupMastery, masteryLevel, isNew, itemMastery, LEVELS, MAX_BOX } from '../srs.js';
 import { bar, levelDot } from '../components/bits.js';
 import { icons } from '../components/icons.js';
+import { flowRow, howItWorksHTML } from './home.js';
+import { flowState } from '../store.js';
 
 function shell(title, backHash) {
   const wrap = el(`<div class="fade">
@@ -22,6 +24,15 @@ function shell(title, backHash) {
 export function renderLibrary(root) {
   const wrap = shell('Library', null);
   const screen = wrap.querySelector('.screen');
+
+  screen.appendChild(el(`<div class="card">
+    <div class="tiny" style="margin-bottom:8px">What this is</div>
+    <div class="small muted">
+      Reference, not homework. Practice already teaches you each concept the first
+      time it comes up — browse here when you want the full write-up, or to drill
+      one specific thing.
+    </div>
+  </div>`));
 
   if (!content.packs.length) {
     screen.appendChild(el('<div class="empty"><div class="big">📦</div>No packs installed.</div>'));
@@ -58,7 +69,7 @@ export function renderLibrary(root) {
       use.onclick = () => { setActivePack(p.id); location.hash = '#/'; };
       row.appendChild(use);
     } else {
-      const drill = el('<button class="btn" type="button">Practise</button>');
+      const drill = el('<button class="btn" type="button">Practice</button>');
       drill.onclick = () => { location.hash = `#/session?mode=daily&pack=${encodeURIComponent(p.id)}`; };
       row.appendChild(drill);
     }
@@ -84,6 +95,21 @@ export function renderPack(root, packId) {
 
   if (pack.description) {
     screen.appendChild(el(`<div class="card"><div class="brief small">${md(pack.description)}</div></div>`));
+  }
+
+  if (pack.flows.length) {
+    const flows = el(`<div class="card">
+      <div class="row between" style="margin-bottom:4px">
+        <div class="tiny">Walkthroughs</div>
+        <div class="tiny">${pack.flows.filter((f) => flowState(f.id)?.completed).length}/${pack.flows.length}</div>
+      </div>
+      <div class="small faint" style="margin-bottom:6px">
+        Follow one real sequence end to end. Best place to start on a new area.
+      </div>
+    </div>`);
+    pack.flows.forEach((f) => flows.appendChild(flowRow(f)));
+    screen.appendChild(flows);
+    screen.appendChild(el('<div class="tiny" style="margin:18px 0 8px">Units — the drill material</div>'));
   }
 
   pack.units.forEach((u, i) => {
@@ -129,7 +155,7 @@ export function renderUnit(root, unitId) {
     </div>
   </div>`));
 
-  const drill = el('<button class="btn" type="button">Practise this unit</button>');
+  const drill = el('<button class="btn" type="button">Practice this unit</button>');
   drill.onclick = () => { location.hash = `#/session?mode=unit&unit=${encodeURIComponent(unit.id)}`; };
   screen.appendChild(drill);
 
@@ -179,7 +205,7 @@ export function renderConcept(root, conceptId) {
     screen.appendChild(ex);
   }
 
-  const drill = el('<button class="btn" type="button">Practise this concept</button>');
+  const drill = el('<button class="btn" type="button">Practice this concept</button>');
   drill.onclick = () => { location.hash = `#/session?mode=concept&concept=${encodeURIComponent(c.id)}`; };
   screen.appendChild(drill);
 

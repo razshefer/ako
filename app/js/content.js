@@ -18,7 +18,9 @@ export const content = {
   byUnit: new Map(),
   byConcept: new Map(),
   byItem: new Map(),
+  byFlow: new Map(),
   items: [],
+  flows: [],
   problems: [],
 };
 
@@ -64,7 +66,9 @@ export async function loadContent() {
   content.packs = [];
   content.problems = [];
   content.items = [];
-  content.byPack.clear(); content.byUnit.clear(); content.byConcept.clear(); content.byItem.clear();
+  content.flows = [];
+  content.byPack.clear(); content.byUnit.clear(); content.byConcept.clear();
+  content.byItem.clear(); content.byFlow.clear();
 
   const index = await getJSON(new URL('packs.json', CONTENT_ROOT));
   const packIds = index.packs || [];
@@ -86,6 +90,7 @@ export async function loadContent() {
       accent: meta.accent || null,
       description: meta.description || '',
       units: [],
+      flows: [],
       itemCount: 0,
     };
 
@@ -143,6 +148,36 @@ export async function loadContent() {
       pack.itemCount += unit.itemCount;
       pack.units.push(unit);
       content.byUnit.set(unit.id, unit);
+    }
+
+    /* ---- walkthroughs: guided traces through a real sequence of events ---- */
+    for (const flowFile of meta.flows || []) {
+      let raw;
+      try {
+        raw = await getJSON(new URL(`${packId}/flows/${flowFile}.json`, CONTENT_ROOT));
+      } catch (e) {
+        problem(`flow "${packId}/${flowFile}": ${e.message}`);
+        continue;
+      }
+      const flow = {
+        ...raw,
+        id: `${pack.id}/${raw.id || flowFile}`,
+        shortId: raw.id || flowFile,
+        packId: pack.id,
+        index: pack.flows.length,
+        steps: raw.steps || [],
+      };
+      if (!flow.steps.length) problem(`flow "${flow.id}": no steps`);
+      flow.steps.forEach((s, i) => {
+        if (!s.title) problem(`flow "${flow.id}" step ${i + 1}: missing title`);
+        if (s.ask && (!Array.isArray(s.ask.choices) || typeof s.ask.answer !== 'number')) {
+          problem(`flow "${flow.id}" step ${i + 1}: malformed ask`);
+        }
+      });
+      flow.askCount = flow.steps.filter((s) => s.ask).length;
+      pack.flows.push(flow);
+      content.flows.push(flow);
+      content.byFlow.set(flow.id, flow);
     }
 
     content.packs.push(pack);

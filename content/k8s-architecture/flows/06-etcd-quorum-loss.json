@@ -1,0 +1,146 @@
+{
+  "id": "etcd-quorum-loss",
+  "title": "Two of three servers are gone",
+  "subtitle": "Diagnosing quorum loss, and the restore that rewinds the cluster",
+  "minutes": 7,
+  "scenario": "A rack loses power. Two of your three RKE2 servers were in it. The third is up, and every worker node is fine.\n\nSomeone is already asking whether to reboot everything. Work out what is actually broken, what is still working, and what the recovery costs.",
+  "concepts": [
+    "k8s-architecture/control-plane/etcd",
+    "k8s-architecture/control-plane/apiserver",
+    "k8s-architecture/rke2/rke2-lifecycle",
+    "k8s-architecture/failure-modes/cp-triage"
+  ],
+  "steps": [
+    {
+      "actor": "the symptom",
+      "title": "Reads work. Writes hang.",
+      "ask": {
+        "prompt": "`kubectl get pods` works but every `kubectl apply` times out. What does that asymmetry point at?",
+        "choices": [
+          "etcd has lost quorum — reads can be served locally, but no write can be committed without a majority",
+          "RBAC is denying write verbs",
+          "The scheduler has crashed",
+          "The admission webhook is unreachable"
+        ],
+        "answer": 0,
+        "explain": "This asymmetry is the fingerprint of quorum loss and nothing else. RBAC denials are instant 403s, not timeouts. A broken webhook gives you a named error. Reads succeeding while writes hang means the datastore cannot reach agreement."
+      },
+      "body": "The first useful observation is which operations fail.\n\nA write needs a majority of etcd members to acknowledge it before it can be committed. With one member out of three, there is no majority, so no leader can be elected and nothing can be written. Reads can still be answered from the surviving member's local state.\n\nThe cluster is not down. It is **frozen** — it cannot change.",
+      "code": {
+        "lang": "bash",
+        "label": "the shape of the failure",
+        "text": "$ kubectl get pods -A | head -3\nNAMESPACE     NAME                    READY   STATUS    AGE\nkube-system   rke2-coredns-6d4f8b     1/1     Running   80d\n\n$ kubectl apply -f deploy.yaml\nError from server: etcdserver: request timed out\n\n$ kubectl delete pod api-7c9d\nError from server: rpc error: code = Unavailable desc = etcdserver: no leader"
+      }
+    },
+    {
+      "actor": "triage",
+      "title": "Work top-down, do not guess",
+      "body": "Before touching anything, walk the layers. Each step either clears a layer or localizes the fault, and none of them changes state.\n\nA `401` from the health endpoint is good news — it proves the network, the load balancer and the API server process are all fine and you simply sent no credentials. That single observation eliminates three layers in one command.",
+      "code": {
+        "lang": "bash",
+        "label": "five commands, in this order",
+        "text": "$ curl -sk https://k8s-prod.internal:6443/healthz          # reachable at all?\n$ kubectl get --raw '/readyz?verbose' | grep -v ' ok'       # which check fails?\n[-]etcd failed: reason withheld\n\n$ crictl ps --name kube-apiserver                          # static pod alive?\n$ journalctl -u rke2-server -n 100 --no-pager\n$ etcdctl endpoint status --cluster -w table               # the real answer"
+      },
+      "watch": "`/readyz?verbose` naming etcd is usually the whole diagnosis. It works even while writes are failing, because it is a read."
+    },
+    {
+      "actor": "etcdctl",
+      "title": "Confirming it from etcd itself",
+      "body": "On the surviving server, ask etcd directly. Two of three endpoints are unreachable and no member reports itself as leader.\n\nRKE2 keeps its etcd certificates under `server/tls/etcd/`, so the incantation is worth having saved somewhere you can reach at 3am.",
+      "code": {
+        "lang": "bash",
+        "label": "on the surviving server",
+        "text": "$ export ETCDCTL_API=3\n$ export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379\n$ export ETCDCTL_CACERT=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt\n$ export ETCDCTL_CERT=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt\n$ export ETCDCTL_KEY=/var/lib/rancher/rke2/server/tls/etcd/server-client.key\n\n$ etcdctl endpoint status --cluster -w table\n{\"level\":\"warn\",\"error\":\"context deadline exceeded\"}   # 10.0.0.12\n{\"level\":\"warn\",\"error\":\"context deadline exceeded\"}   # 10.0.0.13\n+------------------------+------------------+---------+-----------+\n|        ENDPOINT        |        ID        | DB SIZE | IS LEADER |\n+------------------------+------------------+---------+-----------+\n| https://10.0.0.11:2379 | 8e9e05c52164694d |  412 MB |   false   |\n+------------------------+------------------+---------+-----------+"
+      }
+    },
+    {
+      "actor": "what is still fine",
+      "title": "Say this out loud before anyone reboots anything",
+      "ask": {
+        "prompt": "With the control plane frozen, which of these is NOT still true?",
+        "choices": [
+          "A failed node's pods get rescheduled onto healthy nodes",
+          "Running pods keep serving traffic",
+          "Service routing still works from kube-proxy rules already in the kernel",
+          "A kubelet still restarts a container that crashes"
+        ],
+        "answer": 0,
+        "explain": "Rescheduling is a control-plane action and it is exactly what you have lost. Everything else keeps working because it is either already in the kernel or handled locally by each kubelet from its cached pod specs."
+      },
+      "body": "The data plane is decoupled from the control plane, and right now that is the thing buying you time.\n\nWhat still works: running pods, Service routing (the iptables rules are already in every node's kernel), and each kubelet restarting its own crashed containers from its local view.\n\nWhat you have lost: any *change*. No scheduling, no scaling, no rescheduling if another node dies, no new Services propagating.\n\nSaying this clearly is what stops someone from turning a control-plane incident into a data-plane one.",
+      "code": {
+        "lang": "text",
+        "label": "the two planes",
+        "text": "still working                      lost until quorum returns\n-----------------------------      --------------------------------\npods serving traffic               scheduling new pods\nkube-proxy rules in the kernel     scaling anything\nkubelet restarting containers      replacing a failed node's pods\nCoreDNS answering from its cache   any kubectl write at all"
+      }
+    },
+    {
+      "actor": "the fork in the road",
+      "title": "Two very different recoveries",
+      "ask": {
+        "prompt": "The two dead servers can be powered back on with their disks intact. What is the right move?",
+        "choices": [
+          "Bring them back — quorum returns on its own and nothing is lost",
+          "Restore an etcd snapshot on the survivor immediately, it is faster",
+          "Delete the two Node objects and rebuild them from scratch",
+          "Force the survivor into a single-member cluster and rejoin the others"
+        ],
+        "answer": 0,
+        "explain": "If the members can return with their data, do nothing clever. The moment a majority is present, etcd elects a leader and writes resume with zero data loss. Every other option throws away data you did not have to lose."
+      },
+      "body": "This is the decision that matters, and it is worth being slow about.\n\n**If the machines can come back with their disks** — power them on. Quorum returns, a leader is elected, writes resume, nothing is lost. Always try this first.\n\n**If they are truly gone** — you have one surviving copy of the data and you must rebuild the cluster around it. That is `--cluster-reset`: the survivor is told to become a brand new single-member cluster using the data it already has, and the others rejoin as fresh members.\n\nA snapshot restore is the third option, and only for when the surviving data itself is corrupt — because it costs you everything written since the snapshot.",
+      "code": {
+        "lang": "bash",
+        "label": "the cheap path, if it is available",
+        "text": "# on each recovered server\n$ systemctl start rke2-server\n\n$ etcdctl endpoint status --cluster -w table\n| https://10.0.0.11:2379 | ... |   true  |    # leader elected\n| https://10.0.0.12:2379 | ... |  false  |\n| https://10.0.0.13:2379 | ... |  false  |"
+      }
+    },
+    {
+      "actor": "the hard path",
+      "title": "Rebuilding around one survivor",
+      "body": "The two machines are gone for good. The survivor still has the full keyspace — etcd replicates everything to every member — so no data is lost, but the cluster's membership records two peers that will never return.\n\n`--cluster-reset` rewrites that membership: the survivor becomes a healthy one-member cluster using its existing data. Then you wipe the etcd directory on the replacements and let them join as new members.\n\nOrder matters. Stop RKE2 everywhere first; two nodes each believing they are the cluster is a genuinely bad outcome.",
+      "code": {
+        "lang": "bash",
+        "label": "reset around the survivor",
+        "text": "# 1. stop rke2-server on every server node\n\n# 2. on the survivor only\n$ rke2 server --cluster-reset\n$ systemctl start rke2-server\n$ kubectl get nodes                    # writes work again\n\n# 3. on each replacement server\n$ rm -rf /var/lib/rancher/rke2/server/db\n$ systemctl start rke2-server          # joins as a fresh member"
+      }
+    },
+    {
+      "actor": "the snapshot path",
+      "title": "What restoring actually costs",
+      "ask": {
+        "prompt": "You restore a snapshot taken 20 minutes ago. What happens to a namespace someone created 5 minutes ago?",
+        "choices": [
+          "It is gone — a snapshot is the entire keyspace, and restoring rewinds the whole cluster to that moment",
+          "It survives; restore merges the snapshot with current state",
+          "It is preserved because it was created after the snapshot",
+          "It becomes read-only until reconciled"
+        ],
+        "answer": 0,
+        "explain": "An etcd snapshot is a cluster-wide time machine, all-or-nothing. Everything created, changed or deleted since that moment is undone. This is exactly why per-object backups — Velero, or manifests in git — matter alongside snapshots."
+      },
+      "body": "Only reach for this when the surviving data is unusable.\n\nThe procedure is the same shape as a cluster reset, with a snapshot supplied. Everything written after the snapshot is lost — including objects some controller has since acted on, which can leave real infrastructure (load balancers, volumes) orphaned outside the cluster.\n\nAnd the uncomfortable question worth asking now rather than then: has anyone ever tested this? An untested restore is a hypothesis, and snapshots sitting on the same disk as etcd are not a backup at all.",
+      "code": {
+        "lang": "bash",
+        "label": "restore, if it comes to it",
+        "text": "# stop rke2-server everywhere, then on one server:\n$ rke2 server \\\n    --cluster-reset \\\n    --cluster-reset-restore-path=/var/lib/rancher/rke2/server/db/snapshots/etcd-snapshot-...\n\n$ systemctl start rke2-server\n# verify, then wipe server/db on the others and start them"
+      }
+    },
+    {
+      "actor": "afterwards",
+      "title": "The write-up that stops the repeat",
+      "body": "Three things come out of this incident, and none of them is 'add more etcd members'.\n\n**Spread the failure domain.** Three servers in one rack is a one-rack cluster. Five members do not help if they share a power feed.\n\n**Get snapshots off the node.** Configure `etcd-s3` so the backup survives the machine, and schedule an actual restore rehearsal.\n\n**Watch the leading indicators.** etcd complains long before it fails: `apply request took too long` warnings are disk latency, and disk latency is what turns a healthy cluster into a flaky one. Alert on `etcd_disk_wal_fsync_duration_seconds` and on leader changes.",
+      "code": {
+        "lang": "text",
+        "label": "the numbers worth remembering",
+        "text": "members   quorum   can lose\n   1         1         0\n   3         2         1          <- the sane default\n   4         3         1          <- no better than 3, slower writes\n   5         3         2          <- only if spread across real failure domains"
+      }
+    }
+  ],
+  "takeaways": [
+    "Reads working while writes hang is the signature of etcd quorum loss. Nothing else looks like that.",
+    "A frozen control plane is not an outage. Running pods, Service routing and local container restarts all continue — say so before anyone starts rebooting.",
+    "If the dead members can return with their disks, that is the recovery. Everything else loses data you did not have to lose.",
+    "A snapshot restore rewinds the entire cluster. Snapshots on the etcd node are not backups, and an untested restore is a hypothesis."
+  ]
+}

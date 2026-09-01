@@ -8,6 +8,9 @@ import { renderSession } from './views/session.js';
 import { renderProgress } from './views/progress.js';
 import { renderLibrary, renderPack, renderUnit, renderConcept } from './views/library.js';
 import { renderSettings } from './views/settings.js';
+import { renderFlow } from './views/flow.js';
+import { loadGlossary, installGlossaryHandler, glossify, setConceptOpener, closeTermSheet } from './glossary.js';
+import { closeConceptSheet } from './components/conceptsheet.js';
 
 const app = $('#app');
 const tabbar = $('#tabbar');
@@ -41,6 +44,11 @@ function renderTabs(activeHref) {
 export function render() {
   const { parts, params } = parseRoute();
   const head = parts[0] || '';
+
+  // any overlay belongs to the screen that opened it
+  closeTermSheet();
+  closeConceptSheet();
+  setConceptOpener(null);
 
   app.innerHTML = '';
   app.classList.remove('is-fullscreen');
@@ -79,6 +87,11 @@ export function render() {
         tabHref = '#/library';
         renderConcept(app, decodeURIComponent(parts[1] || ''));
         break;
+      case 'flow':
+        app.classList.add('is-fullscreen');
+        tabbar.hidden = true;
+        renderFlow(app, decodeURIComponent(parts.slice(1).join('/')));
+        break;
       case 'settings':
         tabHref = '#/settings';
         renderSettings(app);
@@ -93,6 +106,7 @@ export function render() {
   }
 
   renderTabs(tabHref);
+  glossify(app);
   window.scrollTo(0, 0);
 }
 
@@ -101,8 +115,9 @@ window.addEventListener('reps:render', () => { render(); });
 
 async function boot() {
   applyTheme();
+  installGlossaryHandler();
   try {
-    await loadContent();
+    await Promise.all([loadContent(), loadGlossary()]);
   } catch (e) {
     app.innerHTML = `<div class="screen" style="padding-top:60px"><div class="card">
       <h2>Content failed to load</h2>

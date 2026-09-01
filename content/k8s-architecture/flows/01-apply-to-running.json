@@ -1,0 +1,195 @@
+{
+  "id": "apply-to-running",
+  "title": "From kubectl apply to a running container",
+  "subtitle": "One Deployment, nine components, no magic",
+  "minutes": 8,
+  "scenario": "You have a `deployment.yaml` with 3 replicas of an image, and a cluster that is healthy. You type `kubectl apply -f deployment.yaml` and press enter.\n\nBetween that keypress and a container serving traffic, at least nine separate pieces do their bit — and none of them tells the next one what to do. Follow it the whole way.",
+  "concepts": [
+    "k8s-architecture/request-path/lifecycle",
+    "k8s-architecture/controllers/ownership",
+    "k8s-architecture/control-plane/scheduler-intro",
+    "k8s-architecture/node-runtime/kubelet",
+    "k8s-architecture/node-runtime/cri"
+  ],
+  "steps": [
+    {
+      "actor": "kubectl",
+      "title": "Your laptop builds an HTTPS request",
+      "ask": {
+        "prompt": "Before anything is sent, what does `kubectl` do with your YAML?",
+        "choices": [
+          "Converts it to JSON and POSTs it to the API server, authenticating with the credentials in your kubeconfig",
+          "Sends the YAML straight to the scheduler, which owns placement",
+          "Writes it into etcd over port 2379",
+          "Hands it to the kubelet on the nearest node"
+        ],
+        "answer": 0,
+        "explain": "kubectl is an ordinary HTTP client. It has no special powers and no private channel — everything it does, you could do with curl and the right certificate."
+      },
+      "body": "`kubectl` reads your kubeconfig for the API server address and your credentials, converts the YAML to JSON, and sends it as an HTTP request to the API server.\n\nThat is the whole client side. There is no agent, no daemon, no queue.",
+      "code": {
+        "lang": "bash",
+        "label": "the request, unmasked",
+        "text": "$ kubectl apply -f deployment.yaml -v=8\nPOST https://k8s-prod.internal:6443/apis/apps/v1/namespaces/prod/deployments?fieldManager=kubectl\nRequest Headers:\n    Authorization: Bearer <redacted>\n    Content-Type: application/json\nResponse Status: 201 Created in 31 milliseconds"
+      },
+      "watch": "`-v=8` on any kubectl command shows you the raw HTTP. It is the fastest way to see that nothing else is going on."
+    },
+    {
+      "actor": "kube-apiserver",
+      "title": "The gate: authentication, authorization, admission",
+      "ask": {
+        "prompt": "A mutating webhook injects a sidecar, and a policy engine requires every container to have memory limits. In what order does the API server run them?",
+        "choices": [
+          "Mutating first, then validating — so the injected sidecar is also checked by the policy",
+          "Validating first, so the sidecar is never subject to policy",
+          "Both at once, and the API server merges the results",
+          "Whichever webhook registered first"
+        ],
+        "answer": 0,
+        "explain": "Mutating always precedes validating. That ordering is deliberate: it means nothing can be injected into an object *after* the checks have run. It is also why an injected sidecar with no memory limit gets your whole Deployment rejected."
+      },
+      "body": "The request walks a fixed pipeline: **authentication** (who are you — a 401 if it fails), **authorization** (are you allowed — a 403 if it fails), **mutating admission** (defaults get filled in, sidecars get injected), **schema validation**, then **validating admission** (quota, policy, your own webhooks).\n\nOnly after all of that is the object written to etcd, given a `resourceVersion`, and returned to you as `201 Created`.\n\nWhen you read an error, its shape tells you how far you got: 401 never reached RBAC, 403 passed authentication, and a message naming a webhook means you passed everything before admission.",
+      "code": {
+        "lang": "bash",
+        "label": "the object exists now — but nothing is running",
+        "text": "$ kubectl get deploy api\nNAME   READY   UP-TO-DATE   AVAILABLE   AGE\napi    0/3     0            0           1s\n\n$ kubectl get pods -l app=api\nNo resources found in prod namespace.",
+        "note": "This gap is the whole point: apply only records intent. Everything after this is other components noticing."
+      }
+    },
+    {
+      "actor": "deployment controller",
+      "title": "A controller notices, and makes a ReplicaSet",
+      "ask": {
+        "prompt": "How does the deployment controller find out that your Deployment exists?",
+        "choices": [
+          "It has an open watch on Deployments and receives the change as an event, then reconciles from its cache",
+          "The API server calls it over gRPC and hands it the object",
+          "It polls etcd every 30 seconds",
+          "kubectl notifies it after the write succeeds"
+        ],
+        "answer": 0,
+        "explain": "Every controller in Kubernetes is built the same way: watch, cache, reconcile. Nothing pushes work to a controller, which is why a controller can crash, restart, and simply pick up where the world is now."
+      },
+      "body": "The deployment controller — one of dozens of loops inside kube-controller-manager — has a watch open on Deployments. Your write arrives as an event, it looks at the current state of the object, and sees: 3 replicas wanted, 0 exist.\n\nSo it creates a **ReplicaSet**, named with a hash of the pod template, with an `ownerReference` pointing back at the Deployment.\n\nThen it stops. It does not create pods — that is a different controller's job.",
+      "code": {
+        "lang": "bash",
+        "label": "one object created another",
+        "text": "$ kubectl get rs -l app=api\nNAME              DESIRED   CURRENT   READY   AGE\napi-6b8f9c7d4d    3         3         0       2s\n\n$ kubectl get rs api-6b8f9c7d4d -o jsonpath='{.metadata.ownerReferences[0]}'\n{\"apiVersion\":\"apps/v1\",\"kind\":\"Deployment\",\"name\":\"api\",\"uid\":\"3f2b...\",\"controller\":true}",
+        "note": "That ownerReference is how the garbage collector will clean up later. It matches on uid, not name."
+      }
+    },
+    {
+      "actor": "replicaset controller",
+      "title": "Three pod objects appear — with no node",
+      "body": "A second controller watches ReplicaSets. It sees one wanting 3 pods and counting 0, so it creates three Pod objects, each owned by the ReplicaSet.\n\nThese pods are real API objects now, but they are **Pending** and their `spec.nodeName` is empty. No node knows about them. No container exists anywhere.",
+      "code": {
+        "lang": "bash",
+        "label": "pods exist, nowhere",
+        "text": "$ kubectl get pods -l app=api -o wide\nNAME                   READY   STATUS    NODE     AGE\napi-6b8f9c7d4d-2xk9p   0/1     Pending   <none>   1s\napi-6b8f9c7d4d-7w4mz   0/1     Pending   <none>   1s\napi-6b8f9c7d4d-p9c3v   0/1     Pending   <none>   1s"
+      },
+      "watch": "If a pod stays like this, the problem is scheduling — resources, taints, affinity or an unbound volume. `kubectl describe pod` will name the reason on every node it rejected."
+    },
+    {
+      "actor": "kube-scheduler",
+      "title": "Filter, score, and write one field",
+      "ask": {
+        "prompt": "The scheduler picks node2. What does it physically do next?",
+        "choices": [
+          "Writes a Binding to the API server, which sets the pod's spec.nodeName to node2",
+          "Opens a connection to node2's kubelet and sends it the pod spec",
+          "Asks containerd on node2 to pull the image",
+          "Updates the ReplicaSet with the chosen node"
+        ],
+        "answer": 0,
+        "explain": "The scheduler fills in one field and stops. It never talks to a node. This is why you can bypass it entirely by setting `nodeName` yourself — and why doing so skips every resource and taint check it would have done."
+      },
+      "body": "The scheduler watches for pods with an empty `nodeName`. For each one it runs two phases:\n\n- **Filter** — which nodes could run this? Enough unbooked CPU and memory, taints tolerated, node selectors and affinity satisfied, volumes reachable from that zone.\n- **Score** — of the survivors, which is best? Spread across zones, least-booked resources, image already cached locally.\n\nIt writes a Binding, and its involvement ends. Note it scores on **requests**, not on real usage: a node at 95% actual CPU with small requests booked still looks roomy.",
+      "code": {
+        "lang": "bash",
+        "label": "one field, and the world moves",
+        "text": "$ kubectl get pod api-6b8f9c7d4d-2xk9p -o jsonpath='{.spec.nodeName}'\nnode2\n\n$ kubectl get events --field-selector involvedObject.name=api-6b8f9c7d4d-2xk9p\nTYPE     REASON      MESSAGE\nNormal   Scheduled   Successfully assigned prod/api-6b8f9c7d4d-2xk9p to node2"
+      }
+    },
+    {
+      "actor": "kubelet on node2",
+      "title": "The node picks up its own work",
+      "ask": {
+        "prompt": "How does node2's kubelet learn it has a pod to run?",
+        "choices": [
+          "It is watching the API server for pods whose spec.nodeName matches its own node name",
+          "The scheduler pushed the assignment to it",
+          "kube-proxy relayed it from the control plane",
+          "It polls the ReplicaSet controller"
+        ],
+        "answer": 0,
+        "explain": "Nothing in the control plane ever initiates a connection to a node to hand out work. Nodes pull. That is why a node behind NAT works fine, and why a node that was offline catches up on its own when it comes back."
+      },
+      "body": "The kubelet on node2 has been watching for pods bound to `node2` all along. Yours appears, and it starts building it.\n\nFirst it needs a place to put the containers: it calls containerd over the **CRI** socket to create a **pod sandbox** — the `pause` container that will own the network namespace.",
+      "code": {
+        "lang": "bash",
+        "label": "on the node itself, no kubectl needed",
+        "text": "$ export CONTAINER_RUNTIME_ENDPOINT=unix:///run/k3s/containerd/containerd.sock\n$ crictl pods --name api-6b8f9c7d4d-2xk9p\nPOD ID         NAME                   STATE       NAMESPACE\na1b2c3d4e5f6   api-6b8f9c7d4d-2xk9p   SANDBOX_READY  prod",
+        "note": "On RKE2 that socket path is the k3s one — RKE2 runs its own bundled containerd, not the host's."
+      }
+    },
+    {
+      "actor": "CNI plugin",
+      "title": "The pod gets an IP",
+      "body": "With the sandbox created, the kubelet invokes the **CNI** plugin — Canal by default on RKE2. It allocates an IP from this node's slice of the cluster CIDR and wires the namespace to the node's network.\n\nUntil this succeeds the pod sits in `ContainerCreating`. On a freshly joined node this is the classic chicken-and-egg: the CNI itself runs as a pod, so the node is NotReady until that DaemonSet lands.",
+      "code": {
+        "lang": "bash",
+        "label": "each node owns a slice of the pod network",
+        "text": "$ kubectl get nodes -o custom-columns=NAME:.metadata.name,CIDR:.spec.podCIDR\nnode1   10.42.0.0/24\nnode2   10.42.1.0/24\nnode3   10.42.2.0/24\n\n$ kubectl get pod api-6b8f9c7d4d-2xk9p -o jsonpath='{.status.podIP}'\n10.42.1.37"
+      }
+    },
+    {
+      "actor": "containerd + runc",
+      "title": "The image is pulled and the process starts",
+      "ask": {
+        "prompt": "The image pull fails with an x509 error against your internal registry, on every node. Where is the fix?",
+        "choices": [
+          "/etc/rancher/rke2/registries.yaml, then restart rke2-server/rke2-agent",
+          "An imagePullSecret in the namespace",
+          "The Deployment's securityContext",
+          "The kubelet's --node-ip flag"
+        ],
+        "answer": 0,
+        "explain": "Pulling images is containerd's job, not Kubernetes'. imagePullSecrets solve authentication per namespace; registry TLS trust and mirrors are node-level containerd config, which RKE2 renders from registries.yaml at startup."
+      },
+      "body": "containerd pulls the image (if it is not cached), unpacks it, and starts a shim. The shim calls **runc**, which creates the namespaces and cgroups and finally execs your process.\n\nThe cgroup limits come straight from your manifest: `limits.memory` becomes a hard ceiling the kernel enforces with a kill, and `limits.cpu` becomes a quota the kernel enforces by throttling.",
+      "code": {
+        "lang": "text",
+        "label": "the whole chain",
+        "text": "kubelet -> CRI (gRPC) -> containerd -> containerd-shim -> runc -> your process\n\nfailures map cleanly onto it:\n  ErrImagePull / registry x509   -> containerd\n  permission or cgroup errors    -> runc\n  context deadline on the socket -> kubelet <-> containerd"
+      }
+    },
+    {
+      "actor": "kubelet + endpointslice controller",
+      "title": "Readiness turns the pod into a backend",
+      "ask": {
+        "prompt": "The container is running but its readiness probe is failing. What is true?",
+        "choices": [
+          "The pod stays out of the Service's EndpointSlice, so it receives no traffic — and it is not restarted",
+          "The kubelet restarts the container until readiness passes",
+          "The pod is evicted and rescheduled elsewhere",
+          "It receives traffic anyway; readiness is only reported in kubectl"
+        ],
+        "answer": 0,
+        "explain": "Readiness controls traffic; liveness controls restarts. Mixing them up is the single most expensive probe mistake — a liveness probe that checks your database turns a dependency blip into a cluster-wide restart storm."
+      },
+      "body": "The kubelet starts running probes and reports status back to the API server. Once the readiness probe passes, the pod is marked Ready.\n\nThe **endpointslice controller** is watching for exactly that: it adds the pod's IP to the Service's EndpointSlice. **kube-proxy** on every node sees the EndpointSlice change and rewrites the kernel rules so the Service's ClusterIP can now land on this pod.\n\nOnly now does traffic reach your container.",
+      "code": {
+        "lang": "bash",
+        "label": "the last link in the chain",
+        "text": "$ kubectl get endpointslices -l kubernetes.io/service-name=api\nNAME        ADDRESSTYPE   ENDPOINTS                            PORTS\napi-x7k2p   IPv4          10.42.1.37,10.42.2.9,10.42.0.14      8080\n\n$ kubectl get deploy api\nNAME   READY   UP-TO-DATE   AVAILABLE   AGE\napi    3/3     3            3           24s"
+      },
+      "watch": "A Service that returns connection refused almost always has an empty EndpointSlice — either the selector matches nothing, or nothing is Ready."
+    }
+  ],
+  "takeaways": [
+    "`apply` only records intent. Everything after it is independent components noticing and reacting.",
+    "Nobody pushes work to a node. The kubelet pulls the pods assigned to it, which is why nodes recover on their own.",
+    "Each hop has its own failure signature: Pending is the scheduler, ContainerCreating is the kubelet's setup, CrashLoopBackOff is your app.",
+    "Readiness is the switch that puts a pod into a Service. Liveness is the switch that restarts it."
+  ]
+}

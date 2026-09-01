@@ -1,18 +1,37 @@
 # Reps
 
 Duolingo-style drilling for technical subjects, built to be used on a phone in
-five-minute sessions. Ships with a 157-exercise **Kubernetes Architecture**
-pack written around RKE2 and Rancher.
+five-minute sessions. Ships with a **Kubernetes Architecture** pack written
+around RKE2 and Rancher: 157 exercises and 7 end-to-end walkthroughs.
 
+- **Two ways to learn.** *Practice* drills you with spaced repetition; a
+  *walkthrough* traces one real sequence end to end — a deploy, a node dying, a
+  request finding a pod — asking you to predict each step before it is revealed.
+- **Tap any underlined term** for a one-line plain-English definition, without
+  leaving the question.
 - Short daily sessions, streaks, a daily goal and XP
-- Spaced repetition — every exercise has its own review schedule
 - Practical first: every concept leads with real YAML, commands and log output
-- Progress tracking per unit and per concept, with a "needs another look" list
+- Progress per unit and per concept, with a "needs another look" list
 - Any subject can be added by dropping a folder in `content/`
 - Installable as a PWA and works offline
 - **No build step, no npm, no account, no server** — plain ES modules and JSON
 
-## Running it
+## Using it
+
+Open it and press **Practice**. There is nothing to read first — the first time a
+concept comes up you get a short explanation with real commands, then questions
+on it. The Library is reference, not homework.
+
+If you prefer seeing how things interact, start with a **walkthrough** instead.
+
+## Putting it on your phone
+
+See **[DEPLOY.md](DEPLOY.md)**. Short version: push to GitHub and turn on Pages
+(the workflow in `.github/workflows/pages.yml` validates and publishes), then
+open the URL on your phone and *Add to Home Screen*. After that it works offline
+and does not need your laptop.
+
+## Running it locally
 
 There is nothing to compile. You just need to serve the folder over HTTP
 (ES modules and `fetch` do not work from `file://`).
@@ -62,13 +81,16 @@ app/
     srs.js              spaced repetition: boxes, intervals, mastery
     session.js          queue building and the run state machine
     content.js          loads and indexes content packs
-    components/         exercise widgets, icons, small render helpers
-    views/              home, session, progress, library, settings
+    glossary.js         tap-to-define terms
+    components/         exercise widgets, concept overlay, icons, helpers
+    views/              home, session, flow, progress, library, settings
 content/
   packs.json            list of installed packs
+  glossary.json         term -> one-line definition
   k8s-architecture/
-    pack.json           title, emoji, unit order
+    pack.json           title, emoji, unit and walkthrough order
     units/*.json        concepts + exercises
+    flows/*.json        walkthroughs
 tools/
   validate.py           check content before committing
   make_icons.py         regenerate the PWA icons
@@ -80,6 +102,19 @@ See [AUTHORING.md](AUTHORING.md). Short version: copy a unit file, edit the
 JSON, register the pack in `content/packs.json`, run `python tools/validate.py`.
 No rebuild — reload the page.
 
+## Walkthroughs
+
+A walkthrough is an ordered trace through one real sequence. Each step names the
+actor (`kube-scheduler`, `03:14:40`, `containerd`), and most steps ask you to
+predict what happens before revealing it, with real command output attached.
+
+The pack ships with seven: `kubectl apply` end to end, a request finding a pod,
+a rolling update and where its 502s come from, a node dying at 03:14, an RKE2
+cluster booting from nothing, losing etcd quorum, and Rancher taking over a
+cluster.
+
+Predictions count toward your daily goal, so a walkthrough is a full session.
+
 ## How the scheduling works
 
 Each exercise has a Leitner box (0–7) and an ease factor. Answer it right and
@@ -90,6 +125,9 @@ tomorrow.
 A session is built from due reviews first, then a capped number of new
 exercises, interleaved. Concept mastery is the average strength of its
 exercises, which is what drives the progress bars and the weak-spots list.
+
+Answer order is randomized on every view, so you cannot learn "it's the third
+one" instead of the answer.
 
 All of it is tunable in Settings: daily goal, session length, new-per-session,
 and whether units unlock in order.

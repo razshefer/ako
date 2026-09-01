@@ -1,6 +1,7 @@
 import { el, esc, toast, today, clamp } from '../util.js';
 import { content } from '../content.js';
 import { state, setSetting, exportJSON, importJSON, resetProgress, DEFAULT_SETTINGS } from '../store.js';
+import { howItWorksHTML } from './home.js';
 
 export function renderSettings(root) {
   const wrap = el(`<div class="fade">
@@ -8,6 +9,12 @@ export function renderSettings(root) {
     <div class="screen"></div>
   </div>`);
   const screen = wrap.querySelector('.screen');
+
+  /* ---- how this works ---- */
+  screen.appendChild(el(`<div class="card">
+    <div class="tiny" style="margin-bottom:8px">How this works</div>
+    ${howItWorksHTML()}
+  </div>`));
 
   /* ---- daily practice ---- */
   const practice = el('<div class="card"><div class="tiny" style="margin-bottom:4px">Daily practice</div></div>');
@@ -79,7 +86,9 @@ export function renderSettings(root) {
   screen.appendChild(backup);
 
   /* ---- content ---- */
-  const packs = content.packs.map((p) => `${p.emoji} ${p.title} — ${p.units.length} units, ${p.itemCount} exercises`).join('\n');
+  const packs = content.packs.map((p) =>
+    `${p.emoji} ${p.title}\n   ${p.units.length} units · ${p.itemCount} exercises · ${p.flows.length} walkthroughs`
+  ).join('\n');
   screen.appendChild(el(`<div class="card">
     <div class="tiny" style="margin-bottom:8px">Content</div>
     <pre class="code">${esc(packs || 'no packs')}</pre>

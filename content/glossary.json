@@ -1,0 +1,556 @@
+{
+  "_comment": "Tap-to-define terms. Keep 'short' to one or two plain sentences - this is the safety net for someone who does not have every term memorized yet. 'concept' optionally points at a concept id to open for the full story.",
+  "terms": {
+    "kube-apiserver": {
+      "short": "The front door to the cluster. Every request and every component goes through it, and it is the only thing that talks to etcd.",
+      "concept": "k8s-architecture/control-plane/apiserver"
+    },
+    "etcd": {
+      "short": "The cluster's database. Every object you create is stored here, and nothing else is remembered.",
+      "concept": "k8s-architecture/control-plane/etcd"
+    },
+    "kube-controller-manager": {
+      "short": "One process running dozens of small loops that keep reality matching what you asked for.",
+      "concept": "k8s-architecture/control-plane/kcm"
+    },
+    "kube-scheduler": {
+      "short": "Decides which node each new pod runs on. It only picks a node; it never starts containers.",
+      "concept": "k8s-architecture/control-plane/scheduler-intro"
+    },
+    "kubelet": {
+      "short": "The agent on every node. It watches for pods assigned to its node and makes them real.",
+      "concept": "k8s-architecture/node-runtime/kubelet"
+    },
+    "kube-proxy": {
+      "short": "Programs the kernel rules on each node that turn a Service IP into a real pod IP.",
+      "concept": "k8s-architecture/networking/services"
+    },
+    "control plane": {
+      "short": "The brains: API server, etcd, scheduler and controllers. It decides things; nodes do things."
+    },
+    "data plane": {
+      "short": "The nodes and the containers actually serving your traffic."
+    },
+    "node": {
+      "short": "A machine (VM or physical) that runs pods.",
+      "auto": false
+    },
+    "pod": {
+      "short": "The smallest thing you can run: one or more containers sharing an IP and a lifetime.",
+      "auto": false
+    },
+    "container runtime": {
+      "short": "The software that actually starts containers. On RKE2 that is containerd.",
+      "concept": "k8s-architecture/node-runtime/cri"
+    },
+    "containerd": {
+      "short": "The container runtime RKE2 ships and runs itself. It pulls images and starts containers.",
+      "concept": "k8s-architecture/node-runtime/cri"
+    },
+    "CRI": {
+      "short": "Container Runtime Interface - the gRPC API the kubelet uses to ask containerd to run something.",
+      "concept": "k8s-architecture/node-runtime/cri"
+    },
+    "crictl": {
+      "short": "A CLI that talks straight to containerd. Works even when the API server is down.",
+      "concept": "k8s-architecture/node-runtime/cri"
+    },
+    "runc": {
+      "short": "The low-level tool that creates the actual Linux process, namespaces and cgroups."
+    },
+    "pause container": {
+      "short": "A tiny container that holds a pod's network namespace so the others can share one IP.",
+      "concept": "k8s-architecture/node-runtime/cri"
+    },
+    "static pod": {
+      "short": "A pod the kubelet runs from a YAML file on disk, with no API server involved. How RKE2 starts the control plane.",
+      "concept": "k8s-architecture/node-runtime/kubelet"
+    },
+    "mirror pod": {
+      "short": "The read-only copy of a static pod that shows up in kubectl. Deleting it changes nothing."
+    },
+    "Lease": {
+      "short": "A tiny object a node updates every 10 seconds to say 'I am still alive'.",
+      "concept": "k8s-architecture/node-runtime/kubelet"
+    },
+    "leader election": {
+      "short": "Several copies run, but only the one holding a Lease is allowed to act. Stops two controllers fighting."
+    },
+    "quorum": {
+      "short": "The majority of etcd members. Without a majority, nothing can be written.",
+      "concept": "k8s-architecture/control-plane/etcd"
+    },
+    "Raft": {
+      "short": "The agreement algorithm etcd uses so a majority of members always agree on the data.",
+      "concept": "k8s-architecture/control-plane/etcd"
+    },
+    "revision": {
+      "short": "etcd's global version counter. It ticks up on every write in the whole cluster.",
+      "auto": false
+    },
+    "resourceVersion": {
+      "short": "A version stamp on every object. Used to detect conflicting edits and to resume watches.",
+      "concept": "k8s-architecture/request-path/resource-version"
+    },
+    "watch": {
+      "short": "A long-lived connection that streams changes to a client instead of making it poll.",
+      "auto": false
+    },
+    "informer": {
+      "short": "A client-side cache kept fresh by a watch. Controllers read from it instead of hammering the API server.",
+      "concept": "k8s-architecture/request-path/resource-version"
+    },
+    "reconcile": {
+      "short": "Look at what is wanted, look at what exists, and close the gap. Repeat forever."
+    },
+    "controller": {
+      "short": "A loop that watches some objects and works to make reality match them.",
+      "concept": "k8s-architecture/control-plane/kcm"
+    },
+    "operator": {
+      "short": "A controller for your own custom resource type, usually packaging app-specific knowledge.",
+      "concept": "k8s-architecture/controllers/crds"
+    },
+    "CRD": {
+      "short": "CustomResourceDefinition - teaches the API server a new object type. Storage only; a controller gives it meaning.",
+      "concept": "k8s-architecture/controllers/crds"
+    },
+    "CR": {
+      "short": "Custom Resource - one instance of a type defined by a CRD."
+    },
+    "admission": {
+      "short": "The checkpoint after authorization where requests can be changed or rejected before being saved.",
+      "concept": "k8s-architecture/request-path/admission"
+    },
+    "admission webhook": {
+      "short": "Your own HTTPS service that the API server calls to approve or modify every matching request.",
+      "concept": "k8s-architecture/request-path/admission"
+    },
+    "mutating": {
+      "short": "An admission step that can change the object, for example injecting a sidecar."
+    },
+    "validating": {
+      "short": "An admission step that can only accept or reject, never change."
+    },
+    "failurePolicy": {
+      "short": "What happens when a webhook is unreachable: Fail rejects the request, Ignore lets it through.",
+      "concept": "k8s-architecture/request-path/admission"
+    },
+    "authentication": {
+      "short": "Who are you? Certificates, tokens, OIDC. Failing gives a 401.",
+      "concept": "k8s-architecture/request-path/lifecycle"
+    },
+    "authorization": {
+      "short": "Are you allowed to do this? Almost always RBAC. Failing gives a 403.",
+      "concept": "k8s-architecture/request-path/rbac"
+    },
+    "RBAC": {
+      "short": "Role-Based Access Control: rules saying which verbs an identity may use on which resources. Permissions only add up; there is no deny.",
+      "concept": "k8s-architecture/request-path/rbac"
+    },
+    "Role": {
+      "short": "A list of allowed verbs on resources, inside one namespace.",
+      "concept": "k8s-architecture/request-path/rbac"
+    },
+    "ClusterRole": {
+      "short": "Like a Role, but cluster-wide, or for things that have no namespace such as nodes.",
+      "concept": "k8s-architecture/request-path/rbac"
+    },
+    "RoleBinding": {
+      "short": "Gives a Role (or a ClusterRole) to someone, inside one namespace.",
+      "concept": "k8s-architecture/request-path/rbac"
+    },
+    "ClusterRoleBinding": {
+      "short": "Gives a ClusterRole to someone across the whole cluster.",
+      "concept": "k8s-architecture/request-path/rbac"
+    },
+    "ServiceAccount": {
+      "short": "An identity for pods. Its token is mounted into the pod so it can call the API."
+    },
+    "impersonation": {
+      "short": "One identity acting as another, on purpose and audited. Rancher uses this to proxy your kubectl."
+    },
+    "ownerReference": {
+      "short": "A pointer from a child object to its parent. When the parent goes, the child is cleaned up.",
+      "concept": "k8s-architecture/controllers/ownership"
+    },
+    "garbage collector": {
+      "short": "The loop that deletes objects whose owner no longer exists.",
+      "concept": "k8s-architecture/controllers/ownership"
+    },
+    "finalizer": {
+      "short": "A note on an object meaning 'do not really delete this until I have cleaned up'. The usual reason things get stuck Terminating.",
+      "concept": "k8s-architecture/controllers/finalizers"
+    },
+    "deletionTimestamp": {
+      "short": "Set when you delete something that has a finalizer. The object stays, marked as going away.",
+      "concept": "k8s-architecture/controllers/finalizers"
+    },
+    "Deployment": {
+      "short": "Manages ReplicaSets to run N copies of a pod and roll out new versions."
+    },
+    "ReplicaSet": {
+      "short": "Keeps exactly N identical pods running. A rollout is really one ReplicaSet growing while another shrinks.",
+      "concept": "k8s-architecture/controllers/rollouts"
+    },
+    "StatefulSet": {
+      "short": "Like a Deployment but each replica gets a stable name, a stable DNS entry and its own disk.",
+      "concept": "k8s-architecture/storage/stateful-storage"
+    },
+    "DaemonSet": {
+      "short": "Runs one copy of a pod on every node. Used for CNI, kube-proxy, log agents."
+    },
+    "maxSurge": {
+      "short": "How many extra pods may exist above the desired count during a rollout.",
+      "concept": "k8s-architecture/controllers/rollouts"
+    },
+    "maxUnavailable": {
+      "short": "How many pods may be missing or not ready during a rollout.",
+      "concept": "k8s-architecture/controllers/rollouts"
+    },
+    "requests": {
+      "short": "What a pod reserves. The scheduler adds these up to decide if a pod fits on a node.",
+      "concept": "k8s-architecture/scheduling/requests-limits",
+      "auto": false
+    },
+    "limits": {
+      "short": "The ceiling at runtime. Over the CPU limit means throttling; over the memory limit means the process is killed.",
+      "concept": "k8s-architecture/scheduling/requests-limits",
+      "auto": false
+    },
+    "allocatable": {
+      "short": "What a node actually offers to pods: total capacity minus what is reserved for the OS and kubelet.",
+      "concept": "k8s-architecture/scheduling/requests-limits"
+    },
+    "QoS class": {
+      "short": "Guaranteed, Burstable or BestEffort. Decides who gets evicted first when a node runs low.",
+      "concept": "k8s-architecture/node-runtime/node-pressure"
+    },
+    "OOMKilled": {
+      "short": "The kernel killed the container for using more memory than its limit. Exit code 137.",
+      "concept": "k8s-architecture/node-runtime/node-pressure"
+    },
+    "eviction": {
+      "short": "The kubelet removing pods because the whole node is short on memory or disk.",
+      "concept": "k8s-architecture/node-runtime/node-pressure"
+    },
+    "throttling": {
+      "short": "The kernel slowing a container down because it hit its CPU limit. No crash, just latency.",
+      "concept": "k8s-architecture/scheduling/requests-limits"
+    },
+    "cgroup": {
+      "short": "The Linux feature that caps and accounts a process group's CPU and memory. How limits are enforced."
+    },
+    "taint": {
+      "short": "A mark on a node that repels pods unless they explicitly tolerate it.",
+      "concept": "k8s-architecture/scheduling/taints"
+    },
+    "toleration": {
+      "short": "A note on a pod saying 'I can live with that taint'. It permits placement, it does not attract.",
+      "concept": "k8s-architecture/scheduling/taints"
+    },
+    "cordon": {
+      "short": "Stop new pods landing on a node. Existing pods stay.",
+      "concept": "k8s-architecture/scheduling/taints"
+    },
+    "drain": {
+      "short": "Cordon a node and then evict its pods, respecting PodDisruptionBudgets.",
+      "concept": "k8s-architecture/scheduling/taints"
+    },
+    "affinity": {
+      "short": "Rules pulling a pod towards certain nodes, or towards/away from other pods.",
+      "concept": "k8s-architecture/scheduling/affinity"
+    },
+    "anti-affinity": {
+      "short": "Keep these pods apart, usually one per node or per zone.",
+      "concept": "k8s-architecture/scheduling/affinity"
+    },
+    "topologySpreadConstraints": {
+      "short": "Spread replicas evenly across zones or nodes, with a tolerance for how uneven it may get.",
+      "concept": "k8s-architecture/scheduling/affinity"
+    },
+    "PodDisruptionBudget": {
+      "short": "A floor on how many pods must stay up during planned disruption like a drain. Does not help when hardware dies.",
+      "concept": "k8s-architecture/scheduling/priority-pdb"
+    },
+    "PDB": {
+      "short": "PodDisruptionBudget: how many pods must stay up during a drain or scale-down.",
+      "concept": "k8s-architecture/scheduling/priority-pdb"
+    },
+    "preemption": {
+      "short": "A high-priority pod evicting lower-priority pods to make room for itself.",
+      "concept": "k8s-architecture/scheduling/priority-pdb"
+    },
+    "PriorityClass": {
+      "short": "A number saying how important a pod is. Higher wins when there is not enough room.",
+      "concept": "k8s-architecture/scheduling/priority-pdb"
+    },
+    "CNI": {
+      "short": "Container Network Interface - the plugin that gives pods IPs and makes them reach each other.",
+      "concept": "k8s-architecture/networking/pod-network"
+    },
+    "Canal": {
+      "short": "RKE2's default networking: Flannel moves the packets, Calico enforces NetworkPolicy.",
+      "concept": "k8s-architecture/networking/pod-network"
+    },
+    "Calico": {
+      "short": "A CNI plugin. In RKE2 it usually provides the NetworkPolicy half of Canal."
+    },
+    "Cilium": {
+      "short": "An eBPF-based CNI, offered by RKE2 as an alternative to Canal."
+    },
+    "VXLAN": {
+      "short": "Wrapping pod packets inside normal node-to-node packets. Costs about 50 bytes, which is why MTU matters.",
+      "concept": "k8s-architecture/networking/pod-network"
+    },
+    "MTU": {
+      "short": "The biggest packet a link accepts. Too big for the tunnel and large transfers hang while small ones work.",
+      "concept": "k8s-architecture/networking/pod-network"
+    },
+    "ClusterIP": {
+      "short": "A virtual IP for a Service. Nothing listens on it; the kernel rewrites packets to a real pod IP.",
+      "concept": "k8s-architecture/networking/services"
+    },
+    "Service": {
+      "short": "A stable name and IP in front of a changing set of pods.",
+      "concept": "k8s-architecture/networking/services"
+    },
+    "EndpointSlice": {
+      "short": "The live list of pod IPs behind a Service. Only ready pods are in it.",
+      "concept": "k8s-architecture/networking/services"
+    },
+    "headless": {
+      "short": "A Service with no virtual IP: DNS returns the pod IPs directly. What StatefulSets use.",
+      "concept": "k8s-architecture/networking/services"
+    },
+    "NodePort": {
+      "short": "A Service also reachable on a fixed high port on every node."
+    },
+    "LoadBalancer": {
+      "short": "A Service that asks something outside Kubernetes for an external IP. On bare metal that is MetalLB or RKE2's ServiceLB.",
+      "concept": "k8s-architecture/networking/services"
+    },
+    "Ingress": {
+      "short": "HTTP routing rules. Inert unless an ingress controller is installed to act on them.",
+      "concept": "k8s-architecture/networking/ingress-netpol"
+    },
+    "ingress controller": {
+      "short": "The proxy that reads Ingress objects and actually serves the traffic. RKE2 ships ingress-nginx.",
+      "concept": "k8s-architecture/networking/ingress-netpol"
+    },
+    "CoreDNS": {
+      "short": "The cluster's DNS server. Turns Service names into ClusterIPs.",
+      "concept": "k8s-architecture/networking/coredns"
+    },
+    "ndots": {
+      "short": "How many dots a name needs before DNS tries it as-is. The default of 5 makes external lookups do extra failed queries first.",
+      "concept": "k8s-architecture/networking/coredns"
+    },
+    "NetworkPolicy": {
+      "short": "A firewall for pods. A pod ignores all policies until one selects it - then only what is allowed gets through.",
+      "concept": "k8s-architecture/networking/ingress-netpol"
+    },
+    "conntrack": {
+      "short": "The kernel's table of live connections. It remembers the translation so replies find their way back."
+    },
+    "PersistentVolumeClaim": {
+      "short": "A request for storage of a given size and type. Lives in a namespace.",
+      "concept": "k8s-architecture/storage/pv-pvc"
+    },
+    "PVC": {
+      "short": "PersistentVolumeClaim: a pod's request for a piece of storage.",
+      "concept": "k8s-architecture/storage/pv-pvc"
+    },
+    "PersistentVolume": {
+      "short": "The actual piece of storage, bound one-to-one with a claim. Cluster-wide, not namespaced.",
+      "concept": "k8s-architecture/storage/pv-pvc"
+    },
+    "PV": {
+      "short": "PersistentVolume: the real storage behind a claim.",
+      "concept": "k8s-architecture/storage/pv-pvc"
+    },
+    "StorageClass": {
+      "short": "The recipe for creating storage on demand: which driver, which settings, and what happens on delete.",
+      "concept": "k8s-architecture/storage/pv-pvc"
+    },
+    "reclaim policy": {
+      "short": "What happens to the real disk when the claim is deleted. Delete destroys it; Retain keeps it.",
+      "concept": "k8s-architecture/storage/pv-pvc"
+    },
+    "WaitForFirstConsumer": {
+      "short": "Do not create the disk until a pod is scheduled, so it lands in the right zone.",
+      "concept": "k8s-architecture/storage/pv-pvc"
+    },
+    "CSI": {
+      "short": "Container Storage Interface - the plugin API storage vendors implement to create, attach and mount volumes.",
+      "concept": "k8s-architecture/storage/csi"
+    },
+    "VolumeAttachment": {
+      "short": "An object recording which node a disk is currently attached to.",
+      "concept": "k8s-architecture/storage/csi"
+    },
+    "ReadWriteOnce": {
+      "short": "The volume can be mounted read-write by pods on one node at a time.",
+      "concept": "k8s-architecture/storage/csi"
+    },
+    "liveness probe": {
+      "short": "Is this process wedged? Failing restarts the container.",
+      "concept": "k8s-architecture/failure-modes/probes"
+    },
+    "readiness probe": {
+      "short": "Should this pod get traffic right now? Failing removes it from the Service, without restarting it.",
+      "concept": "k8s-architecture/failure-modes/probes"
+    },
+    "startup probe": {
+      "short": "Gives a slow-booting app time before the other probes start judging it.",
+      "concept": "k8s-architecture/failure-modes/probes"
+    },
+    "preStop": {
+      "short": "A hook that runs before SIGTERM. A few seconds of sleep here removes most rollout 502s.",
+      "concept": "k8s-architecture/failure-modes/probes"
+    },
+    "terminationGracePeriodSeconds": {
+      "short": "How long a pod gets to shut down before it is killed outright. The clock covers preStop too.",
+      "concept": "k8s-architecture/failure-modes/probes"
+    },
+    "SIGTERM": {
+      "short": "The polite 'please stop' signal. Ignore it and you get SIGKILL when the grace period ends."
+    },
+    "CrashLoopBackOff": {
+      "short": "The container keeps starting and exiting, so the kubelet is waiting longer between tries. An app problem, not a cluster one.",
+      "concept": "k8s-architecture/failure-modes/pod-states"
+    },
+    "ImagePullBackOff": {
+      "short": "The image could not be pulled: wrong tag, no credentials, or the registry is unreachable."
+    },
+    "Pending": {
+      "short": "No node has accepted the pod yet. A scheduling problem, not a container problem.",
+      "concept": "k8s-architecture/failure-modes/pod-states"
+    },
+    "NotReady": {
+      "short": "The control plane has stopped hearing healthy status from that node's kubelet.",
+      "concept": "k8s-architecture/failure-modes/node-notready"
+    },
+    "RKE2": {
+      "short": "Rancher's Kubernetes distribution: one binary, a systemd unit, its own containerd, control plane as static pods.",
+      "concept": "k8s-architecture/rke2/rke2-layout"
+    },
+    "rke2-server": {
+      "short": "The systemd unit on a control-plane node. It starts the whole control plane.",
+      "concept": "k8s-architecture/rke2/rke2-layout"
+    },
+    "rke2-agent": {
+      "short": "The systemd unit on a worker node. It runs the kubelet and containerd only.",
+      "concept": "k8s-architecture/rke2/rke2-layout"
+    },
+    "supervisor": {
+      "short": "RKE2's own service on port 9345 that new nodes talk to in order to join and fetch certificates.",
+      "concept": "k8s-architecture/rke2/rke2-join"
+    },
+    "helm-controller": {
+      "short": "RKE2's built-in installer: it turns a HelmChart object into a Job that runs helm.",
+      "concept": "k8s-architecture/controllers/crds"
+    },
+    "HelmChartConfig": {
+      "short": "The supported way to change RKE2's bundled add-ons. Your values are merged in and survive restarts.",
+      "concept": "k8s-architecture/rke2/rke2-config"
+    },
+    "tls-san": {
+      "short": "Extra names and IPs to put in the API server certificate. Set it before you build the cluster.",
+      "concept": "k8s-architecture/rke2/rke2-config"
+    },
+    "registries.yaml": {
+      "short": "The file that tells containerd about private registries: mirrors, credentials and CA certs.",
+      "concept": "k8s-architecture/node-runtime/cri"
+    },
+    "etcd snapshot": {
+      "short": "A point-in-time copy of the whole cluster state. Restoring rewinds everything, not one namespace.",
+      "concept": "k8s-architecture/rke2/rke2-lifecycle"
+    },
+    "Rancher": {
+      "short": "A management UI and API for many clusters, itself running as an app on one Kubernetes cluster.",
+      "concept": "k8s-architecture/rancher/rancher-server"
+    },
+    "local cluster": {
+      "short": "In Rancher, the cluster Rancher itself runs on. Its etcd is Rancher's database.",
+      "concept": "k8s-architecture/rancher/rancher-server"
+    },
+    "downstream cluster": {
+      "short": "Any cluster Rancher manages, as opposed to the one Rancher runs on.",
+      "concept": "k8s-architecture/rancher/cluster-agents"
+    },
+    "cattle-cluster-agent": {
+      "short": "The pod in a managed cluster that dials out to Rancher and holds the tunnel open.",
+      "concept": "k8s-architecture/rancher/cluster-agents"
+    },
+    "rancher-system-agent": {
+      "short": "A per-node service that applies Rancher's plans: installing RKE2, writing config, running upgrades.",
+      "concept": "k8s-architecture/rancher/rancher-provisioning"
+    },
+    "Fleet": {
+      "short": "Rancher's GitOps engine, built to deploy the same git repo to many clusters selected by label.",
+      "concept": "k8s-architecture/rancher/fleet"
+    },
+    "GitRepo": {
+      "short": "The Fleet object naming a repo, branch and paths to watch.",
+      "concept": "k8s-architecture/rancher/fleet"
+    },
+    "Bundle": {
+      "short": "What Fleet rendered from a repo path, before it is sent to any particular cluster.",
+      "concept": "k8s-architecture/rancher/fleet",
+      "auto": false
+    },
+    "BundleDeployment": {
+      "short": "One bundle's state on one specific cluster. Where Fleet errors actually show up.",
+      "concept": "k8s-architecture/rancher/fleet"
+    },
+    "Cluster API": {
+      "short": "The upstream project for managing clusters as Kubernetes objects. Rancher builds its RKE2 provisioning on it.",
+      "concept": "k8s-architecture/rancher/rancher-provisioning"
+    },
+    "namespace": {
+      "short": "A folder for objects, used for names, RBAC and quotas. Not a security boundary on its own."
+    },
+    "manifest": {
+      "short": "The YAML describing an object you want to exist.",
+      "auto": false
+    },
+    "sidecar": {
+      "short": "An extra container in the same pod that supports the main one, such as a proxy or log shipper."
+    },
+    "kubeconfig": {
+      "short": "The file holding the cluster address and your credentials for kubectl."
+    }
+  },
+  "aliases": {
+    "API server": "kube-apiserver",
+    "apiserver": "kube-apiserver",
+    "controller-manager": "kube-controller-manager",
+    "scheduler": "kube-scheduler",
+    "PodDisruptionBudgets": "PodDisruptionBudget",
+    "PDBs": "PDB",
+    "finalizers": "finalizer",
+    "taints": "taint",
+    "tolerations": "toleration",
+    "ownerReferences": "ownerReference",
+    "EndpointSlices": "EndpointSlice",
+    "PVCs": "PVC",
+    "PVs": "PV",
+    "StorageClasses": "StorageClass",
+    "NetworkPolicies": "NetworkPolicy",
+    "ClusterIPs": "ClusterIP",
+    "informers": "informer",
+    "controllers": "controller",
+    "operators": "operator",
+    "CRDs": "CRD",
+    "namespaces": "namespace",
+    "static pods": "static pod",
+    "admission webhooks": "admission webhook",
+    "ingress controllers": "ingress controller",
+    "sidecars": "sidecar",
+    "eviction threshold": "eviction",
+    "evicted": "eviction",
+    "reconciliation": "reconcile",
+    "level-triggered": "reconcile"
+  }
+}

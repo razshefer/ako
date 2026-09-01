@@ -118,6 +118,7 @@ def main():
 
         seen_items: set[str] = set()
         seen_concepts: set[str] = set()
+        seen_concept_paths: set[tuple[str, str]] = set()
         pack_items = 0
 
         for unit_file in meta.get("units", []):
@@ -138,6 +139,7 @@ def main():
                 if cid in seen_concepts:
                     err(f"{pack_id}: duplicate concept id '{cid}'")
                 seen_concepts.add(cid)
+                seen_concept_paths.add((unit.get('id', unit_file), cid))
                 if not concept.get("brief"):
                     err(f"{where}: concept has no brief")
                 if not concept.get("examples"):
@@ -155,6 +157,47 @@ def main():
                   f"{len(unit.get('concepts', [])):>2} concepts  {unit_items:>3} exercises")
 
         print(f"   {'':<38} {'':>2}           {pack_items:>3} total")
+
+        # walkthroughs
+        concept_ids = {f"{pack_id}/{u}/{c}" for (u, c) in seen_concept_paths}
+        for flow_file in meta.get("flows", []):
+            path = pack_dir / "flows" / f"{flow_file}.json"
+            if not path.exists():
+                err(f"{pack_id}: flow file missing: {path.relative_to(ROOT)}")
+                continue
+            flow = load(path)
+            if flow is None:
+                continue
+            where = f"{pack_id}/{flow.get('id', flow_file)}"
+            steps = flow.get("steps", [])
+            if len(steps) < 3:
+                err(f"{where}: a walkthrough needs at least 3 steps")
+            if not flow.get("scenario"):
+                err(f"{where}: missing scenario")
+            for ref in flow.get("concepts", []):
+                if ref not in concept_ids:
+                    err(f"{where}: concepts references unknown concept '{ref}'")
+            asks = 0
+            for i, s in enumerate(steps, 1):
+                if not s.get("title"):
+                    err(f"{where} step {i}: missing title")
+                if not s.get("body"):
+                    err(f"{where} step {i}: missing body")
+                ask = s.get("ask")
+                if ask:
+                    asks += 1
+                    choices = ask.get("choices") or []
+                    if len(choices) < 2:
+                        err(f"{where} step {i}: ask needs at least 2 choices")
+                    a = ask.get("answer")
+                    if not isinstance(a, int) or not (0 <= a < len(choices)):
+                        err(f"{where} step {i}: ask answer index out of range")
+                    if not ask.get("explain"):
+                        err(f"{where} step {i}: ask has no explain")
+            if not asks:
+                warn(f"{where}: no predictions - it reads as an article, not a walkthrough")
+            print(f"   ~ {flow.get('title', flow_file)[:36]:<36} "
+                  f"{len(steps):>2} steps     {asks:>3} predictions")
 
     print("\nExercise types:", ", ".join(f"{k}={v}" for k, v in sorted(totals.items())))
     return report()

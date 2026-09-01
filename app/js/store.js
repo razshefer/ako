@@ -21,7 +21,9 @@ function blank() {
     activePack: null,
     records: {},         // itemId -> srs record
     days: {},            // 'YYYY-MM-DD' -> { items, correct, xp, seconds }
-    conceptSeen: {},      // conceptId -> 'YYYY-MM-DD' first time the brief was shown
+    conceptSeen: {},     // conceptId -> 'YYYY-MM-DD' first time the brief was shown
+    flows: {},           // flowId -> { completed, runs, lastScore }
+    seenIntro: false,    // has the "how this works" card been dismissed
     createdAt: today(),
     lastOpen: today(),
   };
@@ -42,6 +44,7 @@ function load() {
       records: parsed.records || {},
       days: parsed.days || {},
       conceptSeen: parsed.conceptSeen || {},
+      flows: parsed.flows || {},
     };
   } catch (e) {
     console.error('[store] could not read saved state, starting fresh', e);
@@ -103,6 +106,27 @@ export function answer(item, correct, firstTry = true) {
   touch();
   return rec;
 }
+
+/* ---------- walkthroughs ---------- */
+export const flowState = (flowId) => state.flows[flowId] || null;
+
+/** A prediction answered inside a walkthrough counts toward the daily goal. */
+export function answerFlowStep(correct) {
+  const d = (state.days[today()] ||= { items: 0, correct: 0, xp: 0, seconds: 0 });
+  d.items += 1;
+  if (correct) { d.correct += 1; d.xp += 8; }
+  touch();
+}
+
+export function completeFlow(flowId, score) {
+  const f = (state.flows[flowId] ||= { completed: null, runs: 0, lastScore: null });
+  f.completed = today();
+  f.runs += 1;
+  f.lastScore = score;
+  touch();
+}
+
+export function dismissIntro() { state.seenIntro = true; touch(); }
 
 export function addSessionTime(seconds) {
   const d = (state.days[today()] ||= { items: 0, correct: 0, xp: 0, seconds: 0 });

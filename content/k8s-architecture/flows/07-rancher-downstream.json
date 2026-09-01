@@ -1,0 +1,170 @@
+{
+  "id": "rancher-downstream",
+  "title": "Rancher takes over a cluster",
+  "subtitle": "The tunnel, the impersonation, and who owns the node config",
+  "minutes": 7,
+  "scenario": "You have a Rancher server and an existing RKE2 cluster that nobody manages centrally yet. You are about to import it, then provision a second cluster from Rancher, then roll a baseline out to both with Fleet.\n\nThe two clusters will end up behaving very differently. Knowing which is which saves you a confusing afternoon later.",
+  "concepts": [
+    "k8s-architecture/rancher/rancher-server",
+    "k8s-architecture/rancher/cluster-agents",
+    "k8s-architecture/rancher/rancher-provisioning",
+    "k8s-architecture/rancher/fleet"
+  ],
+  "steps": [
+    {
+      "actor": "the local cluster",
+      "title": "Rancher is an app, and Kubernetes is its database",
+      "ask": {
+        "prompt": "Where does Rancher keep its own state — clusters, users, projects, settings?",
+        "choices": [
+          "As CRDs in the etcd of the cluster it runs on",
+          "In an external PostgreSQL it manages",
+          "Distributed across each downstream cluster's etcd",
+          "In a PersistentVolume mounted by the rancher pod"
+        ],
+        "answer": 0,
+        "explain": "Rancher uses Kubernetes as its datastore. That means backing up Rancher is backing up the local cluster's etcd (or using the rancher-backup operator) — and it means every Rancher object is inspectable with plain kubectl."
+      },
+      "body": "Rancher is a Deployment in `cattle-system` on a cluster it calls **local**. Everything it knows lives as custom resources in that cluster's etcd.\n\nThat has a pleasant consequence for debugging: anything the UI shows you, you can also read with kubectl. And an important operational one: lose the local cluster and you lose your management plane — though every downstream cluster keeps running untouched.",
+      "code": {
+        "lang": "bash",
+        "label": "Rancher, from the inside",
+        "text": "$ kubectl -n cattle-system get deploy\nNAME              READY   AGE\nrancher           3/3     190d\nrancher-webhook   1/1     190d\n\n$ kubectl get crd | grep cattle.io | head -5\nclusters.management.cattle.io\nclusters.provisioning.cattle.io\nprojects.management.cattle.io\nbundles.fleet.cattle.io\nsettings.management.cattle.io"
+      },
+      "watch": "Keep direct kubeconfigs for your downstream clusters somewhere outside Rancher. The day you need them is the day the UI is unavailable."
+    },
+    {
+      "actor": "importing",
+      "title": "A one-liner that is really just a manifest",
+      "ask": {
+        "prompt": "The import command applies a manifest to your cluster. What permissions does it give Rancher?",
+        "choices": [
+          "A ServiceAccount bound to cluster-admin",
+          "Read-only access to core resources",
+          "Access scoped to the cattle-system namespace",
+          "Whatever your own user has, via impersonation"
+        ],
+        "answer": 0,
+        "explain": "Full cluster-admin. That is what makes the proxied UI, Fleet and monitoring work — and it is worth being deliberate about, because compromising Rancher then means compromising every cluster it manages."
+      },
+      "body": "Rancher hands you a `kubectl apply -f https://...` line. There is nothing magic in it: it creates the `cattle-system` namespace, a ServiceAccount with a cluster-admin binding, and the **cattle-cluster-agent** Deployment.\n\nThe agent is the entire integration.",
+      "code": {
+        "lang": "bash",
+        "label": "what the import actually installs",
+        "text": "$ kubectl apply -f https://rancher.example.com/v3/import/<token>_c-m-8x2kd.yaml\n\nnamespace/cattle-system created\nserviceaccount/cattle created\nclusterrolebinding.rbac.authorization.k8s.io/cattle-admin-binding created\ndeployment.apps/cattle-cluster-agent created"
+      }
+    },
+    {
+      "actor": "cattle-cluster-agent",
+      "title": "The connection goes the other way",
+      "ask": {
+        "prompt": "Which direction is the connection between Rancher and a downstream cluster established?",
+        "choices": [
+          "Outbound from the agent to Rancher on 443, held open as a websocket tunnel",
+          "Inbound from Rancher to the downstream API server on 6443",
+          "Both dial each other and the first to connect wins",
+          "Over a VPN Rancher provisions on each node"
+        ],
+        "answer": 0,
+        "explain": "Agent-initiated, always. Downstream clusters need no inbound firewall rules and no public address, which is what makes this work for edge and on-prem fleets. It also tells you where to look when a cluster goes Unavailable: anything blocking egress to the Rancher URL."
+      },
+      "body": "The agent dials out to Rancher on 443 and holds a websocket open. All management traffic — proxied kubectl, Fleet, monitoring configuration, cluster status — travels back down that tunnel.\n\nSo when a cluster shows `Unavailable` in the UI while your own kubeconfig works perfectly, the cluster is healthy and the *link* is not. The agent's logs name the reason directly: DNS, a proxy, certificate trust, or a changed `server-url`.",
+      "code": {
+        "lang": "bash",
+        "label": "the two failures you will actually see",
+        "text": "$ kubectl -n cattle-system logs -l app=cattle-cluster-agent --tail=20\nERROR: https://rancher.example.com/ping is not accessible (Could not resolve host)\n\n# or\nx509: certificate signed by unknown authority\n\n# both are about reaching and trusting this:\n$ kubectl get settings.management.cattle.io server-url -o jsonpath='{.value}'\nhttps://rancher.example.com"
+      },
+      "watch": "Changing `server-url` after clusters are registered makes every agent stale at once. It is a fleet-wide outage of the management plane, not of the clusters."
+    },
+    {
+      "actor": "you, in the UI",
+      "title": "Your kubectl is not your kubectl",
+      "body": "You open the cluster in Rancher and delete a pod. On the downstream cluster, the audit log does not show your name as the caller.\n\nRancher authenticates you against whatever backend you configured, maps you to permissions, and then makes the request **as its own ServiceAccount with impersonation headers** carrying your Rancher user ID.\n\nWhich means auditing 'who deleted that pod' has an extra hop: take the `u-...` ID and map it back to a person in the Rancher UI or the `users.management.cattle.io` objects.",
+      "code": {
+        "lang": "log",
+        "label": "the downstream audit entry",
+        "text": "\"user\":              { \"username\": \"system:serviceaccount:cattle-system:rancher\" },\n\"impersonatedUser\":  { \"username\": \"u-mo773yhbsr\",\n                       \"groups\": [\"system:authenticated\"] },\n\"verb\": \"delete\", \"resource\": \"pods\", \"namespace\": \"prod\""
+      }
+    },
+    {
+      "actor": "provisioning",
+      "title": "The second cluster is a different animal",
+      "ask": {
+        "prompt": "On a Rancher-provisioned RKE2 cluster you edit `/etc/rancher/rke2/config.yaml` on a node and restart the service. What happens?",
+        "choices": [
+          "rancher-system-agent reconciles the node back to the cluster spec and your edit is lost",
+          "The change persists — Rancher only manages the initial install",
+          "The node is removed from the cluster for drift",
+          "The change is copied to every other node"
+        ],
+        "answer": 0,
+        "explain": "This is the single most important difference between imported and provisioned. For a provisioned cluster Rancher owns the desired state and enforces it per node. For an imported one, the file on the node is the truth. Same distribution, opposite ownership."
+      },
+      "body": "Provisioning a cluster from Rancher (2.6 and later) is built on **Cluster API**. Rancher creates a `clusters.provisioning.cattle.io` object; CAPI controllers and `rancher-machine` create the infrastructure, and a per-node `rancher-system-agent` applies plans — installing RKE2, writing its config, running upgrades.\n\nSo the RKE2 config you learned to write in `/etc/rancher/rke2/config.yaml` still exists on the node, but it is now **generated**. The place to edit it is the cluster spec.",
+      "code": {
+        "lang": "yaml",
+        "label": "where config.yaml comes from now",
+        "text": "spec:\n  kubernetesVersion: v1.31.4+rke2r1\n  rkeConfig:\n    machineGlobalConfig:\n      cni: canal\n      disable:\n        - rke2-ingress-nginx\n      tls-san:\n        - k8s-prod.internal\n    machineSelectorConfig:\n      - config:\n          protect-kernel-defaults: true\n        machineLabelSelector:\n          matchLabels:\n            role: worker"
+      },
+      "watch": "`journalctl -u rancher-system-agent` on a node that will not join or upgrade. It is a separate unit from rke2-server and it has its own story to tell."
+    },
+    {
+      "actor": "Fleet",
+      "title": "One repo, every cluster that matches",
+      "ask": {
+        "prompt": "Why does Fleet target clusters by label rather than by name?",
+        "choices": [
+          "So a new cluster with the right labels automatically inherits everything aimed at that group",
+          "Because cluster names are not unique across namespaces",
+          "Because names change when a cluster is re-registered",
+          "To keep cluster names out of git"
+        ],
+        "answer": 0,
+        "explain": "Declarative targeting is what makes fifty clusters manageable. You describe the *kind* of cluster something belongs on, and membership takes care of itself as the estate changes."
+      },
+      "body": "Fleet watches a **GitRepo**, renders the paths you name into a **Bundle**, and creates one **BundleDeployment** per matching cluster. A `fleet-agent` in each downstream cluster applies its own.\n\nLabel both clusters `env=prod` and both get the baseline — as will the next one you build.\n\nWhen something is red, walk the chain downward: GitRepo red with green Bundles is a git or auth problem; green Bundles with a red BundleDeployment is a problem in one specific cluster, and that object's status carries the actual apply error.",
+      "code": {
+        "lang": "yaml",
+        "label": "targeting by what a cluster is",
+        "text": "apiVersion: fleet.cattle.io/v1alpha1\nkind: GitRepo\nmetadata:\n  name: platform-baseline\n  namespace: fleet-default\nspec:\n  repo: https://git.internal/platform/baseline\n  branch: main\n  paths: [manifests/monitoring, manifests/policies]\n  targets:\n    - name: prod\n      clusterSelector:\n        matchLabels:\n          env: prod"
+      }
+    },
+    {
+      "actor": "the webhook",
+      "title": "One shared failure mode worth knowing",
+      "body": "Both clusters now run `rancher-webhook` — a validating and mutating admission webhook enforcing Rancher's RBAC and CRD invariants.\n\nIt is an admission webhook like any other, which means it has the same deadlock property: if its pods are down and its `failurePolicy` is `Fail`, matching creates and updates are rejected cluster-wide until it recovers or you unregister it.\n\nRecovery is the same as for any webhook: save a copy of the configuration, delete it so the API server stops calling out, get the pods healthy, re-apply.",
+      "code": {
+        "lang": "bash",
+        "label": "the break-glass",
+        "text": "$ kubectl get validatingwebhookconfiguration rancher.cattle.io -o yaml > /tmp/webhook.yaml\n$ kubectl delete validatingwebhookconfiguration rancher.cattle.io\n\n# fix the pods, then\n$ kubectl apply -f /tmp/webhook.yaml"
+      }
+    },
+    {
+      "actor": "the summary",
+      "title": "Two clusters, two ownership models",
+      "ask": {
+        "prompt": "Which capability do you get on a provisioned cluster but NOT on an imported one?",
+        "choices": [
+          "Upgrading the Kubernetes version from Rancher and having node config reconciled from the cluster spec",
+          "Proxied kubectl access through the Rancher UI",
+          "Fleet deploying to it",
+          "Seeing its workloads and events in the UI"
+        ],
+        "answer": 0,
+        "explain": "Everything driven by the cluster agent — proxied kubectl, Fleet, monitoring, visibility — works identically for both. Lifecycle ownership is the whole difference: versions, node configuration and machines."
+      },
+      "body": "Both clusters look the same in the UI. They are not the same underneath, and the difference decides where you make a change.\n\n**Imported** — Rancher observes and proxies. The node is the source of truth. You upgrade it yourself, with `config.yaml` and systemd, exactly as before.\n\n**Provisioned** — Rancher owns the lifecycle. The cluster spec is the source of truth, and the system agent enforces it. Edit the node directly and your change is reverted, usually at the least convenient moment.",
+      "code": {
+        "lang": "text",
+        "label": "where do I make the change?",
+        "text": "                        imported            provisioned\nnode config             the node's file      cluster spec (rkeConfig)\nk8s version upgrade     you, per node        Rancher / a Plan CR\nadding a node           rke2-agent + token   a machine pool, or a registration command\nproxied kubectl         yes                  yes\nFleet                   yes                  yes"
+      }
+    }
+  ],
+  "takeaways": [
+    "Rancher stores everything as CRDs in its local cluster. Losing Rancher costs you the management plane, not the clusters.",
+    "Downstream clusters dial out to Rancher and hold the tunnel. `Unavailable` in the UI with a working kubeconfig is always an agent or egress problem.",
+    "UI actions reach the downstream API as Rancher's ServiceAccount impersonating your user — worth knowing before you read an audit log.",
+    "Imported means the node owns its config; provisioned means Rancher does and will revert you. Same RKE2, opposite direction."
+  ]
+}

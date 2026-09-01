@@ -1,23 +1,23 @@
 {
   "id": "request-path",
   "title": "The path of an API request",
-  "summary": "Authentication, authorisation, admission webhooks and how a write actually lands in etcd.",
+  "summary": "Authentication, authorization, admission webhooks and how a write actually lands in etcd.",
   "concepts": [
     {
       "id": "lifecycle",
       "title": "From kubectl to etcd",
-      "brief": "Every request — yours, a controller's, Rancher's — walks the same pipeline:\n\n- **Authentication**: who are you? Client cert, bearer token, ServiceAccount JWT, or an OIDC/webhook provider. Failure = `401`.\n- **Authorisation**: are you allowed? RBAC (and the Node authorizer for kubelets). Failure = `403`.\n- **Mutating admission**: plugins and webhooks may *change* the object (inject sidecars, add defaults).\n- **Schema validation**: does the object match the OpenAPI schema / CRD schema?\n- **Validating admission**: plugins, webhooks and ValidatingAdmissionPolicy may *reject* it.\n- **Persist**: written to etcd, revision assigned, watchers notified.\n\nThe order matters for debugging. A `401` never reached RBAC. A `403` means you authenticated fine and RBAC said no. A message from a webhook means you got all the way to admission.",
+      "brief": "Every request — yours, a controller's, Rancher's — walks the same pipeline:\n\n- **Authentication**: who are you? Client cert, bearer token, ServiceAccount JWT, or an OIDC/webhook provider. Failure = `401`.\n- **Authorization**: are you allowed? RBAC (and the Node authorizer for kubelets). Failure = `403`.\n- **Mutating admission**: plugins and webhooks may *change* the object (inject sidecars, add defaults).\n- **Schema validation**: does the object match the OpenAPI schema / CRD schema?\n- **Validating admission**: plugins, webhooks and ValidatingAdmissionPolicy may *reject* it.\n- **Persist**: written to etcd, revision assigned, watchers notified.\n\nThe order matters for debugging. A `401` never reached RBAC. A `403` means you authenticated fine and RBAC said no. A message from a webhook means you got all the way to admission.",
       "examples": [
         {
           "label": "Reading the error tells you the stage",
           "lang": "bash",
-          "code": "# 401 - authentication\nerror: You must be logged in to the server (Unauthorized)\n\n# 403 - authorisation (RBAC)\nError from server (Forbidden): pods is forbidden:\n  User \"raz\" cannot list resource \"pods\" in API group \"\" in the namespace \"prod\"\n\n# admission webhook rejection\nError from server: admission webhook \"validation.gatekeeper.sh\" denied the request:\n  container <api> has no memory limit"
+          "code": "# 401 - authentication\nerror: You must be logged in to the server (Unauthorized)\n\n# 403 - authorization (RBAC)\nError from server (Forbidden): pods is forbidden:\n  User \"raz\" cannot list resource \"pods\" in API group \"\" in the namespace \"prod\"\n\n# admission webhook rejection\nError from server: admission webhook \"validation.gatekeeper.sh\" denied the request:\n  container <api> has no memory limit"
         },
         {
           "label": "Who am I, and can I do this?",
           "lang": "bash",
           "code": "$ kubectl auth whoami\nATTRIBUTE   VALUE\nUsername    system:serviceaccount:prod:deployer\nGroups      [system:serviceaccounts system:authenticated]\n\n$ kubectl auth can-i delete deployments -n prod\nno\n\n$ kubectl auth can-i --list -n prod | head -5",
-          "note": "`auth can-i` asks the API server to run the real authorisation check. It is the fastest way to settle an RBAC argument."
+          "note": "`auth can-i` asks the API server to run the real authorization check. It is the fastest way to settle an RBAC argument."
         },
         {
           "label": "See the whole pipeline with verbose output",
@@ -32,7 +32,7 @@
           "prompt": "Order the stages a `kubectl apply` passes through in the API server.",
           "steps": [
             "Authentication — establish the identity of the caller",
-            "Authorisation — RBAC decides if that identity may perform this verb",
+            "Authorization — RBAC decides if that identity may perform this verb",
             "Mutating admission — webhooks and plugins may modify the object",
             "Schema validation against the OpenAPI/CRD schema",
             "Validating admission — webhooks and policies may reject it",
@@ -281,7 +281,7 @@
         {
           "id": "conflict-409",
           "type": "mcq",
-          "prompt": "Your operator gets `409 Conflict` when updating a CR it just read. What is the correct behaviour?",
+          "prompt": "Your operator gets `409 Conflict` when updating a CR it just read. What is the correct behavior?",
           "choices": [
             "Re-read the object and retry the update against the new resourceVersion",
             "Force the write with --overwrite to win the race",

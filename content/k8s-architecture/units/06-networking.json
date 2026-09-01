@@ -83,7 +83,7 @@
     {
       "id": "services",
       "title": "Services and kube-proxy",
-      "brief": "A ClusterIP is a **virtual IP that nothing listens on**. There is no process bound to `10.43.0.15`. Packets to it are rewritten in the kernel by rules that kube-proxy programs on every node.\n\nThe chain of objects:\n\n- **Service** — defines the virtual IP, ports and a pod selector\n- **EndpointSlice** — the actual backend pod IPs, maintained by the endpointslice controller from *ready* pods\n- **kube-proxy** — watches both and writes iptables (default) or IPVS rules that DNAT the ClusterIP to one of the endpoints\n\nConsequences worth internalising:\n\n- Load balancing is per-connection and random — no least-connections, no retries, no session tracking beyond conntrack\n- A pod failing its readiness probe is removed from EndpointSlices, which is what makes readiness meaningful\n- A Service with **no ready endpoints** gives connection refused/timeout — `kubectl get endpointslices` is the fastest diagnosis\n- **Headless** (`clusterIP: None`) skips all of this: DNS returns the pod IPs directly. That is what StatefulSets use.",
+      "brief": "A ClusterIP is a **virtual IP that nothing listens on**. There is no process bound to `10.43.0.15`. Packets to it are rewritten in the kernel by rules that kube-proxy programs on every node.\n\nThe chain of objects:\n\n- **Service** — defines the virtual IP, ports and a pod selector\n- **EndpointSlice** — the actual backend pod IPs, maintained by the endpointslice controller from *ready* pods\n- **kube-proxy** — watches both and writes iptables (default) or IPVS rules that DNAT the ClusterIP to one of the endpoints\n\nConsequences worth internalizing:\n\n- Load balancing is per-connection and random — no least-connections, no retries, no session tracking beyond conntrack\n- A pod failing its readiness probe is removed from EndpointSlices, which is what makes readiness meaningful\n- A Service with **no ready endpoints** gives connection refused/timeout — `kubectl get endpointslices` is the fastest diagnosis\n- **Headless** (`clusterIP: None`) skips all of this: DNS returns the pod IPs directly. That is what StatefulSets use.",
       "examples": [
         {
           "label": "Service, EndpointSlice, iptables",
@@ -166,7 +166,7 @@
           "prompt": "You create a `type: LoadBalancer` Service on a bare-metal RKE2 cluster with no cloud provider and no MetalLB. What happens?",
           "choices": [
             "RKE2's built-in ServiceLB (klipper-lb) can claim it using node IPs — otherwise it stays Pending with no external IP",
-            "It automatically falls back to NodePort behaviour with an external IP",
+            "It automatically falls back to NodePort behavior with an external IP",
             "The API server rejects the Service",
             "kube-proxy assigns an IP from the service CIDR"
           ],
@@ -287,7 +287,7 @@
         {
           "id": "netpol-default",
           "type": "mcq",
-          "prompt": "Pod A is selected by a NetworkPolicy that allows ingress from pods labelled `role=frontend`. Pod B (`role=batch`) tries to connect. Pod C is selected by no policy at all. What is true?",
+          "prompt": "Pod A is selected by a NetworkPolicy that allows ingress from pods labeled `role=frontend`. Pod B (`role=batch`) tries to connect. Pod C is selected by no policy at all. What is true?",
           "choices": [
             "B is blocked from A; C still accepts traffic from everyone",
             "B is blocked, and C is blocked too — policies are namespace-wide",

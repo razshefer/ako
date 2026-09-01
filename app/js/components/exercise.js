@@ -21,7 +21,7 @@ function questionHead(item) {
 
 /* ---------------- multiple choice (single answer) ---------------- */
 function mcq(item, onChange) {
-  const order = shuffle(item.choices.map((c, i) => i), hash(item.id));
+  const order = shuffle(item.choices.map((c, i) => i));
   const node = el(`<div>${questionHead(item)}<div class="choices"></div></div>`);
   const list = node.querySelector('.choices');
   let picked = null;
@@ -60,7 +60,7 @@ function mcq(item, onChange) {
 
 /* ---------------- multiple choice (several answers) ---------------- */
 function multi(item, onChange) {
-  const order = shuffle(item.choices.map((c, i) => i), hash(item.id));
+  const order = shuffle(item.choices.map((c, i) => i));
   const node = el(`<div>${questionHead(item)}
       <div class="small faint" style="margin-top:10px">Select all that apply.</div>
       <div class="choices"></div></div>`);
@@ -127,7 +127,7 @@ function fill(item, onChange) {
 
 /* ---------------- put the steps in order ---------------- */
 function order(item, onChange) {
-  const shuffled = shuffle(item.steps.map((s, i) => i), hash(item.id));
+  const shuffled = shuffle(item.steps.map((s, i) => i));
   const node = el(`<div>${questionHead(item)}
       <div class="small faint" style="margin-top:10px">Tap the steps in the right order.</div>
       <div class="orderlist"></div></div>`);
@@ -181,8 +181,8 @@ function order(item, onChange) {
 
 /* ---------------- match pairs ---------------- */
 function match(item, onChange) {
-  const left = item.pairs.map((p, i) => ({ text: p[0], i }));
-  const right = shuffle(item.pairs.map((p, i) => ({ text: p[1], i })), hash(item.id));
+  const left = shuffle(item.pairs.map((p, i) => ({ text: p[0], i })));
+  const right = shuffle(item.pairs.map((p, i) => ({ text: p[1], i })));
   const node = el(`<div>${questionHead(item)}
       <div class="small faint" style="margin-top:10px">Tap a pair to match them.</div>
       <div class="matchgrid"></div></div>`);
@@ -248,11 +248,6 @@ function match(item, onChange) {
 
 const stripMd = (s) => String(s).replace(/[`*]/g, '');
 
-function hash(s) {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
 
 const FACTORIES = { mcq, multi, fill, order, match };
 

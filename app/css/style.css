@@ -346,6 +346,92 @@ textarea.io{
   border:1px solid var(--line);padding:10px;font-family:var(--mono);font-size:11.5px;color:var(--fg-dim)
 }
 
+/* ---------- glossary terms ---------- */
+.gloss{
+  display:inline; background:none; border:none; padding:0; margin:0;
+  font:inherit; color:inherit; cursor:pointer;
+  text-decoration:underline; text-decoration-style:dotted;
+  text-decoration-color:color-mix(in srgb,var(--accent) 70%,transparent);
+  text-underline-offset:3px; text-decoration-thickness:1.5px;
+}
+.gloss:active{background:color-mix(in srgb,var(--accent) 18%,transparent);border-radius:3px}
+
+.sheet-wrap{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;justify-content:flex-end}
+.sheet-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5);animation:fadein .15s ease}
+.sheet{
+  position:relative; background:var(--card); border-top:1px solid var(--line);
+  border-radius:20px 20px 0 0; padding:10px 18px calc(18px + env(safe-area-inset-bottom));
+  max-width:720px; width:100%; margin:0 auto; box-shadow:var(--shadow);
+  animation:slideup .18s ease;
+}
+.sheet-grip{width:38px;height:4px;border-radius:99px;background:var(--line);margin:0 auto 14px}
+.sheet-term{font-weight:800;font-size:17px;letter-spacing:-.01em;margin-bottom:6px}
+.sheet-def{font-size:15px;line-height:1.6;color:var(--fg-dim)}
+.sheet-actions{display:flex;gap:10px;margin-top:16px}
+.sheet-actions .btn{flex:1;width:auto}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+@keyframes slideup{from{transform:translateY(16px);opacity:.4}to{transform:none;opacity:1}}
+
+/* ---------- full-screen overlay (concept over a session) ---------- */
+.overlay{
+  position:fixed; inset:0; z-index:180; display:flex; flex-direction:column;
+  background:var(--bg); animation:slideup .18s ease;
+}
+.overlay-top{
+  display:flex; align-items:center; gap:10px;
+  padding:calc(10px + env(safe-area-inset-top)) 12px 10px;
+  border-bottom:1px solid var(--line-soft);
+}
+.overlay-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 24px;max-width:720px;width:100%;margin:0 auto}
+.overlay-foot{
+  padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+  border-top:1px solid var(--line-soft); max-width:720px; width:100%; margin:0 auto;
+}
+
+/* ---------- walkthroughs ---------- */
+.flow-title{font-size:24px;letter-spacing:-.02em;line-height:1.2}
+.flow-step-title{font-size:20px;letter-spacing:-.015em;margin-top:2px}
+.flow-note{font-size:15px;line-height:1.65}
+.flow-note.small{font-size:13.5px;line-height:1.6;color:var(--fg-dim)}
+.flow-verdict{
+  margin-top:10px;font-size:13px;font-weight:700;
+  padding:8px 12px;border-radius:10px;
+}
+.flow-verdict.ok{background:var(--good-bg);color:var(--good)}
+.flow-verdict.no{background:var(--bad-bg);color:var(--bad)}
+.flow-watch{
+  margin-top:14px;padding:12px 14px;border-radius:12px;
+  background:var(--bg-soft);border:1px dashed var(--line);
+}
+.flowrow{
+  display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+  padding:12px 0;border:none;background:none;color:var(--fg);cursor:pointer;
+  border-bottom:1px solid var(--line-soft);
+}
+.flowrow:last-child{border-bottom:none}
+.flowrow .title{display:block;font-weight:650;font-size:15px}
+.flowrow .sub{display:block;font-size:12.5px;color:var(--fg-faint);margin-top:1px}
+.flowrow .badge{
+  width:34px;height:34px;flex:none;border-radius:11px;display:grid;place-items:center;
+  background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);
+}
+.flowrow.done .badge{background:var(--good-bg);color:var(--good)}
+.flowrow .badge svg{width:17px;height:17px}
+
+/* ---------- how it works ---------- */
+.steps-explainer{counter-reset:s;margin:0;padding:0;list-style:none}
+.steps-explainer li{
+  counter-increment:s; position:relative; padding-left:34px; margin:12px 0;
+  font-size:14px; line-height:1.55; color:var(--fg-dim);
+}
+.steps-explainer li::before{
+  content:counter(s); position:absolute; left:0; top:0;
+  width:24px;height:24px;border-radius:8px;display:grid;place-items:center;
+  background:var(--card-2);border:1px solid var(--line);
+  font-size:12px;font-weight:800;color:var(--accent);
+}
+.steps-explainer li b{color:var(--fg)}
+
 /* toast */
 .toast{
   position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom));transform:translateX(-50%);

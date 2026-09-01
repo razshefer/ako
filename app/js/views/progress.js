@@ -1,6 +1,6 @@
 import { el, esc, pct, today, daysBetween } from '../util.js';
 import { content, itemsOfUnit, itemsOfPack, allConcepts } from '../content.js';
-import { state, streak, history, totalXP } from '../store.js';
+import { state, streak, history, totalXP, flowState } from '../store.js';
 import { stats, groupMastery, masteryLevel, weakness, isNew, isDue, LEVELS } from '../srs.js';
 import { bar, levelDot } from '../components/bits.js';
 import { icons } from '../components/icons.js';
@@ -39,6 +39,28 @@ export function renderProgress(root) {
     <div class="stat"><b>${ans7 ? pct(ok7 / ans7) + '%' : '—'}</b><span>7d accuracy</span></div>
     <div class="stat"><b>${mastered}/${conceptList.length}</b><span>concepts</span></div>
   </div>`));
+
+  /* ---- walkthroughs ---- */
+  const allFlows = content.flows;
+  if (allFlows.length) {
+    const doneFlows = allFlows.filter((f) => flowState(f.id)?.completed);
+    const card = el(`<div class="card" style="margin-top:14px">
+      <div class="row between" style="margin-bottom:8px">
+        <div class="tiny">Walkthroughs completed</div>
+        <div class="tiny">${doneFlows.length}/${allFlows.length}</div>
+      </div>
+      ${bar(doneFlows.length / allFlows.length, 'good')}
+      <div class="row wrap" style="gap:6px;margin-top:10px"></div>
+    </div>`);
+    const chips = card.querySelector('.row.wrap');
+    allFlows.forEach((f) => {
+      const st = flowState(f.id);
+      const c = el(`<button class="chip ${st?.completed ? 'good' : ''}" type="button" style="white-space:normal;text-align:left">${esc(f.title)}</button>`);
+      c.onclick = () => { location.hash = `#/flow/${encodeURIComponent(f.id)}`; };
+      chips.appendChild(c);
+    });
+    screen.appendChild(card);
+  }
 
   /* ---- heatmap ---- */
   const heat = el(`<div class="card" style="margin-top:14px">

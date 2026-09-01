@@ -86,7 +86,7 @@
     {
       "id": "rke2-config",
       "title": "config.yaml and add-on control",
-      "brief": "`/etc/rancher/rke2/config.yaml` is the single source of node configuration. Every CLI flag has a YAML key; RKE2 renders it into kubelet config, static pod manifests and containerd config at startup.\n\nKeys that come up constantly:\n\n- `tls-san` — extra names/IPs in the API server certificate. **Set this before you build the cluster**; adding a load balancer name later means rotating certs.\n- `disable` — turn off bundled add-ons (`rke2-ingress-nginx`, `rke2-metrics-server`, `rke2-servicelb`)\n- `cni` — canal (default), calico, cilium, multus. Cannot be changed after bootstrap.\n- `node-label` / `node-taint` — applied at registration; changing them later needs `kubectl`, not the config file\n- `profile: cis` — enables the CIS hardening profile (with kernel sysctls and an etcd user prerequisite)\n- `kube-apiserver-arg`, `kubelet-arg`, `kube-controller-manager-arg` — raw flag passthrough\n\nCustomising an add-on is done with a **HelmChartConfig** in `/var/lib/rancher/rke2/server/manifests/`, not by editing the rendered chart — RKE2 overwrites its own manifests on every restart.",
+      "brief": "`/etc/rancher/rke2/config.yaml` is the single source of node configuration. Every CLI flag has a YAML key; RKE2 renders it into kubelet config, static pod manifests and containerd config at startup.\n\nKeys that come up constantly:\n\n- `tls-san` — extra names/IPs in the API server certificate. **Set this before you build the cluster**; adding a load balancer name later means rotating certs.\n- `disable` — turn off bundled add-ons (`rke2-ingress-nginx`, `rke2-metrics-server`, `rke2-servicelb`)\n- `cni` — canal (default), calico, cilium, multus. Cannot be changed after bootstrap.\n- `node-label` / `node-taint` — applied at registration; changing them later needs `kubectl`, not the config file\n- `profile: cis` — enables the CIS hardening profile (with kernel sysctls and an etcd user prerequisite)\n- `kube-apiserver-arg`, `kubelet-arg`, `kube-controller-manager-arg` — raw flag passthrough\n\nCustomizing an add-on is done with a **HelmChartConfig** in `/var/lib/rancher/rke2/server/manifests/`, not by editing the rendered chart — RKE2 overwrites its own manifests on every restart.",
       "examples": [
         {
           "label": "A realistic server config",
@@ -94,7 +94,7 @@
           "code": "# /etc/rancher/rke2/config.yaml\ntoken: <shared-secret>\ntls-san:\n  - k8s-prod.internal\n  - 10.0.0.100\nnode-label:\n  - \"topology.kubernetes.io/zone=eu-west-1a\"\ndisable:\n  - rke2-ingress-nginx      # we run our own\ncni: canal\nprofile: cis\nkube-apiserver-arg:\n  - \"audit-log-path=/var/log/kubernetes/audit.log\"\n  - \"audit-log-maxage=30\"\netcd-snapshot-schedule-cron: \"0 */6 * * *\"\netcd-snapshot-retention: 20"
         },
         {
-          "label": "Customising a bundled add-on the supported way",
+          "label": "Customizing a bundled add-on the supported way",
           "lang": "yaml",
           "code": "# /var/lib/rancher/rke2/server/manifests/rke2-ingress-nginx-config.yaml\napiVersion: helm.cattle.io/v1\nkind: HelmChartConfig\nmetadata:\n  name: rke2-ingress-nginx\n  namespace: kube-system\nspec:\n  valuesContent: |-\n    controller:\n      config:\n        use-forwarded-headers: \"true\"\n      service:\n        enabled: true",
           "note": "The helm-controller merges this into the chart's values. Editing the HelmChart object directly works until the next restart, when RKE2 rewrites it."
@@ -161,12 +161,12 @@
     {
       "id": "rke2-join",
       "title": "Bootstrapping and joining nodes",
-      "brief": "One node starts the cluster; everyone else joins it.\n\n- The **first server** starts with no `server:` key. It initialises etcd and generates the CAs.\n- **Additional servers** set `server: https://<fixed-address>:9345` and the same `token`. They join etcd and become full control-plane members.\n- **Agents** (workers) run `rke2-agent` with `server: https://<fixed-address>:9345` and a token.\n\nPort **9345** is the RKE2 **supervisor** port used for registration and bootstrap — distinct from the Kubernetes API on **6443**. Both must be reachable from joining nodes.\n\nThe `server:` address should be a **fixed registration address** — a load balancer or DNS name in front of all servers — not one node's IP. Pointing every node at server-1 means server-1 becomes a single point of failure for registration and for agent reconnection.\n\nThe token is at `/var/lib/rancher/rke2/server/node-token` on the first server, or whatever you set as `token:` in config. It is a bootstrap credential: anyone with it can join a node to your cluster.",
+      "brief": "One node starts the cluster; everyone else joins it.\n\n- The **first server** starts with no `server:` key. It initializes etcd and generates the CAs.\n- **Additional servers** set `server: https://<fixed-address>:9345` and the same `token`. They join etcd and become full control-plane members.\n- **Agents** (workers) run `rke2-agent` with `server: https://<fixed-address>:9345` and a token.\n\nPort **9345** is the RKE2 **supervisor** port used for registration and bootstrap — distinct from the Kubernetes API on **6443**. Both must be reachable from joining nodes.\n\nThe `server:` address should be a **fixed registration address** — a load balancer or DNS name in front of all servers — not one node's IP. Pointing every node at server-1 means server-1 becomes a single point of failure for registration and for agent reconnection.\n\nThe token is at `/var/lib/rancher/rke2/server/node-token` on the first server, or whatever you set as `token:` in config. It is a bootstrap credential: anyone with it can join a node to your cluster.",
       "examples": [
         {
           "label": "The three node roles",
           "lang": "yaml",
-          "code": "# first server - initialises the cluster\ntoken: <shared-secret>\ntls-san: [k8s-prod.internal]\n\n# additional servers\nserver: https://k8s-prod.internal:9345\ntoken: <shared-secret>\ntls-san: [k8s-prod.internal]\n\n# agents (workers) - rke2-agent.service\nserver: https://k8s-prod.internal:9345\ntoken: <shared-secret>\nnode-label:\n  - \"role=worker\""
+          "code": "# first server - initializes the cluster\ntoken: <shared-secret>\ntls-san: [k8s-prod.internal]\n\n# additional servers\nserver: https://k8s-prod.internal:9345\ntoken: <shared-secret>\ntls-san: [k8s-prod.internal]\n\n# agents (workers) - rke2-agent.service\nserver: https://k8s-prod.internal:9345\ntoken: <shared-secret>\nnode-label:\n  - \"role=worker\""
         },
         {
           "label": "Ports that must be open between nodes",
@@ -215,7 +215,7 @@
           "prompt": "Order the steps to build a 3-server HA RKE2 cluster.",
           "steps": [
             "Create the fixed registration address (LB/DNS) covering all three servers",
-            "Start server-1 with a token and tls-san, no server: key — it initialises etcd and the CAs",
+            "Start server-1 with a token and tls-san, no server: key — it initializes etcd and the CAs",
             "Start server-2 and server-3 with server: https://<fixed-address>:9345 and the same token",
             "Confirm all three are etcd members and Ready",
             "Join agents with the same fixed address and token"
@@ -234,7 +234,7 @@
             "As a per-node value that must differ on each machine"
           ],
           "answer": 0,
-          "explain": "It is a long-lived bootstrap secret shared by every node. Keep it in a secrets manager, deliver it through your provisioning system, and rotate it if it leaks — a registered node can run pods and read what its kubelet is authorised for.",
+          "explain": "It is a long-lived bootstrap secret shared by every node. Keep it in a secrets manager, deliver it through your provisioning system, and rotate it if it leaks — a registered node can run pods and read what its kubelet is authorized for.",
           "tag": "security"
         }
       ]

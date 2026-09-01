@@ -15,7 +15,7 @@
           "note": "`--previous` is the one people forget. Current logs of a crash-looping pod are usually empty or half-written."
         },
         {
-          "label": "Exit codes worth recognising",
+          "label": "Exit codes worth recognizing",
           "lang": "text",
           "code": "0     clean exit - if it keeps restarting, the process is not staying in the foreground\n1     generic application error - read the logs\n125   container runtime failed to run the container\n126   command found but not executable (bad entrypoint permissions)\n127   command not found (wrong path, wrong base image, missing shell)\n137   SIGKILL  - OOMKilled, or a grace period that expired during shutdown\n139   SIGSEGV  - segfault\n143   SIGTERM  - terminated gracefully (normal during a rollout)"
         },
@@ -101,7 +101,7 @@
         {
           "label": "The shutdown sequence",
           "lang": "text",
-          "code": "kubectl delete pod\n  |-- deletionTimestamp set\n  |-- endpointslice controller removes the endpoint\n  |     -> kube-proxy on each node rewrites rules   (takes time, unsynchronised)\n  \\-- kubelet runs preStop hook, then sends SIGTERM\n        -> app drains\n        -> after terminationGracePeriodSeconds: SIGKILL"
+          "code": "kubectl delete pod\n  |-- deletionTimestamp set\n  |-- endpointslice controller removes the endpoint\n  |     -> kube-proxy on each node rewrites rules   (takes time, unsynchronized)\n  \\-- kubelet runs preStop hook, then sends SIGTERM\n        -> app drains\n        -> after terminationGracePeriodSeconds: SIGKILL"
         }
       ],
       "items": [
@@ -279,7 +279,7 @@
             "On a server node, check the static pods with crictl",
             "Read journalctl -u rke2-server for the supervisor's own errors"
           ],
-          "explain": "Each step either clears a layer or localises the fault. Working top-down keeps you from restarting things that were never broken — the most common way an incident gets worse.",
+          "explain": "Each step either clears a layer or localizes the fault. Working top-down keeps you from restarting things that were never broken — the most common way an incident gets worse.",
           "tag": "triage"
         },
         {

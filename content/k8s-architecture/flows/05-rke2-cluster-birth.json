@@ -1,0 +1,162 @@
+{
+  "id": "rke2-cluster-birth",
+  "title": "An RKE2 cluster boots from nothing",
+  "subtitle": "One binary, a systemd unit, and a bootstrap that pulls itself up",
+  "minutes": 8,
+  "scenario": "Three fresh VMs and a load balancer. No Kubernetes anywhere, no kubectl, nothing running.\n\nBy the end of this you will have a three-server HA control plane and a worker — and you will know which file to touch when any of it misbehaves.",
+  "concepts": [
+    "k8s-architecture/rke2/rke2-layout",
+    "k8s-architecture/rke2/rke2-config",
+    "k8s-architecture/rke2/rke2-join",
+    "k8s-architecture/node-runtime/kubelet",
+    "k8s-architecture/controllers/crds"
+  ],
+  "steps": [
+    {
+      "actor": "before anything",
+      "title": "The load balancer comes first",
+      "ask": {
+        "prompt": "Why set up the fixed registration address before installing the first server, rather than after?",
+        "choices": [
+          "So every certificate is issued containing that name from the start — adding it later means rotating certs",
+          "Because RKE2 refuses to start without a load balancer",
+          "So etcd can elect a leader across all three nodes at once",
+          "It makes no difference; the address is only used at install time"
+        ],
+        "answer": 0,
+        "explain": "The API server certificate only contains the names it was issued with. Point kubectl at an address that is not in `tls-san` and TLS fails on the name. Retrofitting it means stopping the service, deleting the serving certs and restarting — easy to get right on day one, annoying on day 200."
+      },
+      "body": "Pick a name that will front all three servers — a load balancer VIP or a DNS record — and decide it now: `k8s-prod.internal`.\n\nEvery node will register through it, and every certificate will contain it. Pointing all your nodes at `server-1` instead is the mistake that turns one machine into a permanent single point of failure for joins and re-registration.",
+      "code": {
+        "lang": "text",
+        "label": "what the LB needs to carry",
+        "text": "6443/tcp   Kubernetes API      -> all three servers\n9345/tcp   RKE2 supervisor     -> all three servers   (node registration)\n\nnode-to-node, not through the LB:\n2379-2380  etcd client + peer  servers <-> servers\n10250/tcp  kubelet API         servers -> all nodes\n8472/udp   Flannel VXLAN       all <-> all"
+      },
+      "watch": "A firewall that allows 6443 but not 9345 gives you a cluster where kubectl works perfectly and no new node can ever join."
+    },
+    {
+      "actor": "server-1",
+      "title": "Configuration before installation",
+      "body": "RKE2 reads `/etc/rancher/rke2/config.yaml` at startup and renders everything else from it: kubelet config, containerd config, and the control-plane static pod manifests.\n\nWrite it before you start the service. Some of these can only be set at bootstrap — `cni` in particular cannot be changed later.\n\nThe `token` is a cluster-level secret. Anyone holding it can register a node into your cluster, so it belongs in your secrets manager, not in the repo.",
+      "code": {
+        "lang": "yaml",
+        "label": "/etc/rancher/rke2/config.yaml on the first server",
+        "text": "token: <shared-secret>\ntls-san:\n  - k8s-prod.internal\n  - 10.0.0.100\ncni: canal\nprofile: cis\ndisable:\n  - rke2-ingress-nginx        # we run our own\netcd-snapshot-schedule-cron: \"0 */6 * * *\"\netcd-snapshot-retention: 20\nkube-apiserver-arg:\n  - \"audit-log-path=/var/log/kubernetes/audit.log\"",
+        "note": "No `server:` key on the first server. That absence is what makes it the one that initializes the cluster."
+      }
+    },
+    {
+      "actor": "server-1",
+      "title": "systemctl start, and the bootstrap paradox",
+      "ask": {
+        "prompt": "There is no API server running yet, so how does the kube-apiserver container get started?",
+        "choices": [
+          "RKE2's kubelet reads static pod manifests off local disk and starts them with no API server involved",
+          "rke2-server runs the API server as a goroutine inside its own process",
+          "A bootstrap Deployment is applied from an embedded manifest",
+          "containerd is configured to auto-start it at boot"
+        ],
+        "answer": 0,
+        "explain": "This is the trick that resolves the chicken-and-egg. The kubelet can run pods from files on disk — no API needed. It starts etcd and the API server that way, and only then can anything else talk to Kubernetes at all."
+      },
+      "body": "`systemctl start rke2-server` unpacks the binaries, starts RKE2's **own bundled containerd**, generates the certificate authorities, and starts a kubelet.\n\nThat kubelet is pointed at a directory of **static pod** manifests. It reads the files and starts etcd, kube-apiserver, kube-scheduler and kube-controller-manager as containers — with nothing to ask for permission from.\n\nOnce the API server is up, those static pods appear in `kubectl` as read-only **mirror pods**. Deleting one via kubectl just bounces it; the file on disk is the source of truth.",
+      "code": {
+        "lang": "bash",
+        "label": "the control plane, as files",
+        "text": "$ ls /var/lib/rancher/rke2/agent/pod-manifests/\netcd.yaml  kube-apiserver.yaml  kube-controller-manager.yaml  kube-scheduler.yaml\n\n$ export PATH=$PATH:/var/lib/rancher/rke2/bin\n$ export KUBECONFIG=/etc/rancher/rke2/rke2.yaml\n$ kubectl get pod -n kube-system kube-apiserver-server-1 \\\n    -o jsonpath='{.metadata.ownerReferences[0].kind}'\nNode",
+        "note": "Owned by a Node, not a Deployment. That is the signature of a static pod."
+      },
+      "watch": "Put those two export lines in root's .bashrc on every server. They are the first thing you need in an incident."
+    },
+    {
+      "actor": "helm-controller",
+      "title": "The cluster installs its own add-ons",
+      "body": "RKE2 drops YAML into `/var/lib/rancher/rke2/server/manifests/` and applies anything it finds there at startup. Most of it is `HelmChart` custom resources.\n\nA built-in **helm-controller** watches those and, for each one, spawns a Job that runs helm. That is how CoreDNS, Canal, metrics-server and ingress-nginx get installed — using nothing but ordinary Kubernetes objects.\n\nUntil Canal's DaemonSet lands, the node is NotReady with `cni plugin not initialized`. That is expected for the first minute: the network is itself a pod.",
+      "code": {
+        "lang": "bash",
+        "label": "the cluster building itself",
+        "text": "$ kubectl -n kube-system get helmcharts.helm.cattle.io\nNAME                 JOB                             CHART\nrke2-canal           helm-install-rke2-canal         rke2-canal\nrke2-coredns         helm-install-rke2-coredns       rke2-coredns\nrke2-metrics-server  helm-install-rke2-metrics-...   rke2-metrics-server\n\n$ kubectl get nodes\nNAME       STATUS   ROLES                       VERSION\nserver-1   Ready    control-plane,etcd,master   v1.31.4+rke2r1"
+      }
+    },
+    {
+      "actor": "you",
+      "title": "Changing an add-on without losing the change",
+      "ask": {
+        "prompt": "You edit the `rke2-coredns` HelmChart object with kubectl. After the next reboot your change is gone. What is the supported way?",
+        "choices": [
+          "A HelmChartConfig with the same name and namespace, in /var/lib/rancher/rke2/server/manifests/",
+          "Edit the chart values inside the RKE2 binary",
+          "Delete the HelmChart and install CoreDNS yourself with helm",
+          "Set the values in config.yaml under helm-arg"
+        ],
+        "answer": 0,
+        "explain": "Anything RKE2 owns in server/manifests/ is regenerated on every start, so direct edits are overwritten. A HelmChartConfig layers your values on top of the chart and survives restarts and upgrades."
+      },
+      "body": "This is the single most useful RKE2 habit: never edit what RKE2 generates. Layer on top of it.\n\nThe same directory is also a clean way to guarantee your own resources exist before any workload starts — a StorageClass, a PriorityClass, a namespace. RKE2 applies what it finds there, though note it only applies; deleting a file does not remove what it created.",
+      "code": {
+        "lang": "yaml",
+        "label": "/var/lib/rancher/rke2/server/manifests/rke2-coredns-config.yaml",
+        "text": "apiVersion: helm.cattle.io/v1\nkind: HelmChartConfig\nmetadata:\n  name: rke2-coredns\n  namespace: kube-system\nspec:\n  valuesContent: |-\n    replicaCount: 3\n    resources:\n      limits:\n        memory: 256Mi"
+      }
+    },
+    {
+      "actor": "server-2 and server-3",
+      "title": "Growing etcd, one member at a time",
+      "ask": {
+        "prompt": "Why add the second and third servers one at a time rather than starting both together?",
+        "choices": [
+          "Each join changes etcd's membership and quorum requirement; doing them one at a time keeps a healthy majority throughout",
+          "Two nodes cannot fetch certificates from the supervisor simultaneously",
+          "The token can only be used once at a time",
+          "The scheduler would place duplicate static pods"
+        ],
+        "answer": 0,
+        "explain": "Membership changes are the delicate part of running etcd. Going 1 -> 2 -> 3 keeps a working majority at every moment. It is the same reason you upgrade servers one at a time later."
+      },
+      "body": "The additional servers get the same token and the same `tls-san`, plus one extra line: `server: https://k8s-prod.internal:9345`.\n\nOn start they contact the **supervisor** on 9345, prove themselves with the token, receive the cluster CAs, join etcd as members, and start their own static pods. Now you have three API servers behind the load balancer and a three-member etcd with a quorum of two.",
+      "code": {
+        "lang": "yaml",
+        "label": "config.yaml on server-2 and server-3",
+        "text": "server: https://k8s-prod.internal:9345\ntoken: <shared-secret>\ntls-san:\n  - k8s-prod.internal\n  - 10.0.0.100\ncni: canal\nprofile: cis"
+      },
+      "watch": "`journalctl -u rke2-server -f` during a join tells you exactly which half failed: a connection refused on 9345 is the network, `failed to validate token` is the secret."
+    },
+    {
+      "actor": "the worker",
+      "title": "An agent is a much smaller thing",
+      "body": "A worker runs `rke2-agent` instead of `rke2-server`. Same token, same registration address, but it starts only a kubelet, kube-proxy and containerd. No etcd, no API server, and no `/etc/rancher/rke2/rke2.yaml` — a worker has no admin kubeconfig, by design.\n\nIt registers itself with the API server, gets a slice of the pod CIDR, the CNI DaemonSet lands on it, and it goes Ready.",
+      "code": {
+        "lang": "bash",
+        "label": "the finished cluster",
+        "text": "$ kubectl get nodes\nNAME       STATUS   ROLES                       AGE   VERSION\nserver-1   Ready    control-plane,etcd,master   14m   v1.31.4+rke2r1\nserver-2   Ready    control-plane,etcd,master   9m    v1.31.4+rke2r1\nserver-3   Ready    control-plane,etcd,master   6m    v1.31.4+rke2r1\nworker-1   Ready    <none>                      2m    v1.31.4+rke2r1"
+      }
+    },
+    {
+      "actor": "one year later",
+      "title": "The thing that kills quiet clusters",
+      "ask": {
+        "prompt": "The cluster has run untouched for 13 months. A server reboots for patching and its API server will not start. Most likely cause?",
+        "choices": [
+          "The one-year certificates expired — RKE2 only rotates them on a restart within 90 days of expiry",
+          "etcd lost quorum during the reboot",
+          "The containerd socket path changed after the OS update",
+          "The token expired"
+        ],
+        "answer": 0,
+        "explain": "RKE2 issues one-year certificates and rotates them automatically when a server restarts inside the last 90 days. A cluster that never restarts never rotates — so it sails past expiry and dies on the next reboot, which is usually a reboot you did on purpose at a bad moment."
+      },
+      "body": "Two maintenance rhythms decide whether this cluster is still healthy in a year:\n\n- **Certificates** — `rke2 certificate check` tells you where you stand. Rotating means stopping the service, `rke2 certificate rotate`, starting it. Put an alert on the expiry date.\n- **Snapshots** — taken automatically to `server/db/snapshots/`, but a snapshot on the same disk as etcd is not a backup. Ship them to S3, and test a restore before you need one.\n\nUpgrades follow the same rule as the build: servers first, one at a time, then agents.",
+      "code": {
+        "lang": "bash",
+        "label": "the two commands to schedule",
+        "text": "$ rke2 certificate check\n  serving-kube-apiserver.crt: expires May 02 2027 (243 days)\n\n$ rke2 etcd-snapshot list\n\n# in config.yaml, ship them off the node:\n#   etcd-s3: true\n#   etcd-s3-bucket: k8s-backups\n#   etcd-s3-endpoint: s3.internal"
+      }
+    }
+  ],
+  "takeaways": [
+    "The bootstrap works because the kubelet can run static pods from disk with no API server. Everything else follows from that.",
+    "config.yaml is the source of truth; RKE2 renders kubelet, containerd and static pod manifests from it. Never edit the generated files.",
+    "Port 9345 is registration, 6443 is the API. Set the fixed address and tls-san before the first server ever starts.",
+    "Certificates expire after a year and only rotate on restart. A cluster nobody touches is the one that dies on its next reboot."
+  ]
+}

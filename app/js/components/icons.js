@@ -15,5 +15,7 @@ export const icons = {
   bolt: wrap('<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>'),
   target: wrap('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>'),
   clock: wrap('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  play: wrap('<path d="M6 4.5 19 12 6 19.5z"/>'),
+  route: wrap('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H14a3.5 3.5 0 0 1 0 7h-4a3.5 3.5 0 0 0 0 7h5.5"/>'),
   refresh: wrap('<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>'),
 };

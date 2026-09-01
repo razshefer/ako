@@ -53,7 +53,7 @@
         {
           "id": "cascade-modes",
           "type": "match",
-          "prompt": "Match the deletion policy to its behaviour.",
+          "prompt": "Match the deletion policy to its behavior.",
           "pairs": [
             ["Background", "Owner deleted at once, children cleaned up after"],
             ["Foreground", "Owner stays Terminating until all children are gone"],

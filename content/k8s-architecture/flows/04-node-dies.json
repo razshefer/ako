@@ -1,0 +1,159 @@
+{
+  "id": "node-dies",
+  "title": "A node dies at 03:14",
+  "subtitle": "The timeline, second by second, and why one pod never moves",
+  "minutes": 8,
+  "scenario": "node3 loses power. It was running six pods: four from a Deployment, one from a DaemonSet, and `postgres-0` from a StatefulSet with a PersistentVolume.\n\nNobody is awake. Follow what the cluster does on its own, and find the one pod that will still be stuck when you wake up.",
+  "concepts": [
+    "k8s-architecture/control-plane/kcm",
+    "k8s-architecture/failure-modes/node-notready",
+    "k8s-architecture/scheduling/taints",
+    "k8s-architecture/storage/csi",
+    "k8s-architecture/storage/stateful-storage"
+  ],
+  "steps": [
+    {
+      "actor": "03:14:00",
+      "title": "The node stops talking",
+      "ask": {
+        "prompt": "What does the control plane actually stop receiving?",
+        "choices": [
+          "The kubelet's Lease renewal in kube-node-lease, which it writes every 10 seconds",
+          "A heartbeat from kube-proxy on that node",
+          "The full NodeStatus update, which is sent every second",
+          "A TCP keepalive from the scheduler to the node"
+        ],
+        "answer": 0,
+        "explain": "Node liveness is a tiny Lease object renewed every 10s, kept deliberately separate from the much heavier NodeStatus (every ~5 min). Splitting them is what let clusters grow past a few hundred nodes without hammering etcd."
+      },
+      "body": "The kubelet on node3 was renewing a `Lease` object every 10 seconds. The power cut stops it mid-cycle.\n\nNothing happens yet. The control plane has no idea — a missed renewal is indistinguishable from a slow network for the first few seconds, and reacting instantly to that would make every brief blip an outage.",
+      "code": {
+        "lang": "bash",
+        "label": "the heartbeat that stopped",
+        "text": "$ kubectl -n kube-node-lease get lease node3 -o jsonpath='{.spec.renewTime}'\n2026-05-02T03:14:07.000000Z\n\n$ date -u\n2026-05-02T03:14:31Z          # 24 seconds of silence so far"
+      }
+    },
+    {
+      "actor": "03:14:40",
+      "title": "The node controller gives up waiting",
+      "body": "After `--node-monitor-grace-period` (40 seconds by default), the node controller inside kube-controller-manager marks node3 `NotReady`.\n\nLook at the conditions carefully: they say `Unknown`, not `False`. That distinction is worth memorizing. `Unknown` means silence — the kubelet is not reporting at all, so go look at the machine. `False` would mean the kubelet is alive and telling you what is wrong.\n\nAt the same moment, the node is tainted `node.kubernetes.io/unreachable:NoExecute`. That taint is the eviction timer starting.",
+      "code": {
+        "lang": "bash",
+        "label": "silence versus a complaint",
+        "text": "$ kubectl describe node node3 | grep -A6 Conditions:\n  Type             Status    Reason               Message\n  MemoryPressure   Unknown   NodeStatusUnknown    Kubelet stopped posting node status\n  DiskPressure     Unknown   NodeStatusUnknown    Kubelet stopped posting node status\n  Ready            Unknown   NodeStatusUnknown    Kubelet stopped posting node status\n\n$ kubectl get node node3 -o jsonpath='{.spec.taints}'\n[{\"key\":\"node.kubernetes.io/unreachable\",\"effect\":\"NoExecute\",\"timeAdded\":\"...\"}]"
+      },
+      "watch": "Meanwhile, on node3 itself, nothing is running at all — but if this had been a network partition rather than a power cut, the kubelet would still be happily restarting crashed containers from its local cache."
+    },
+    {
+      "actor": "03:14:40 – 03:19:40",
+      "title": "Five minutes of nothing, on purpose",
+      "ask": {
+        "prompt": "The node is unreachable and tainted NoExecute. Why do its pods not get evicted immediately?",
+        "choices": [
+          "Every pod carries a default 300-second toleration for that taint, so brief partitions do not cause mass churn",
+          "The scheduler has no spare capacity yet",
+          "Eviction waits for the node object to be deleted",
+          "The kubelet must confirm the eviction, and it cannot be reached"
+        ],
+        "answer": 0,
+        "explain": "Admission adds `tolerationSeconds: 300` for unreachable and not-ready to essentially every pod. It is the cluster's judgment that five minutes of tolerance beats rescheduling the world every time a switch reboots."
+      },
+      "body": "The pods are tainted-out but tolerate it for 300 seconds. So for five minutes the cluster does nothing, deliberately.\n\nIf this were a switch reboot rather than a dead machine, node3 would come back in that window and nothing would have moved. That is the trade being made: slower failover in exchange for not thrashing on every blip.\n\nYou can shorten it per workload — but on a flaky network you will pay for it with churn.",
+      "code": {
+        "lang": "yaml",
+        "label": "faster failover, if you really want it",
+        "text": "spec:\n  tolerations:\n  - key: node.kubernetes.io/unreachable\n    operator: Exists\n    effect: NoExecute\n    tolerationSeconds: 30          # default is 300\n  - key: node.kubernetes.io/not-ready\n    operator: Exists\n    effect: NoExecute\n    tolerationSeconds: 30"
+      }
+    },
+    {
+      "actor": "03:19:40",
+      "title": "The Deployment pods are replaced",
+      "body": "The toleration expires and the pods are marked for deletion. They go to `Terminating` and stay there, because the kubelet that would confirm the deletion is gone.\n\nBut the ReplicaSet controller does not wait for that. It counts Ready pods, sees 4 wanted and 0 healthy, and creates replacements. The scheduler places them on the surviving nodes and they start.\n\nThis is the part people get wrong in conversation: nothing is *migrated*. The old pods are not moved. New pods are created from the same template, with new names and new IPs.",
+      "code": {
+        "lang": "bash",
+        "label": "recreated, not moved",
+        "text": "$ kubectl get pods -l app=api -o wide\nNAME                   READY   STATUS        NODE\napi-6b8f9c-2xk9p       1/1     Terminating   node3    # ghost, waiting for a dead kubelet\napi-6b8f9c-hh4tz       1/1     Running       node1    # brand new\napi-6b8f9c-m2p8w       1/1     Running       node2"
+      },
+      "watch": "A bare pod — one with no controller — is simply gone. Nothing recreates it. That is the real argument against `kubectl run` in production."
+    },
+    {
+      "actor": "03:19:40",
+      "title": "The DaemonSet pod does not come back",
+      "ask": {
+        "prompt": "What happens to node3's DaemonSet pod?",
+        "choices": [
+          "Nothing is created elsewhere — a DaemonSet runs one pod per node, and there is one fewer node",
+          "It is rescheduled onto node1, which now runs two",
+          "It stays Pending until node3 returns",
+          "The DaemonSet controller reduces its desired count and reports degraded"
+        ],
+        "answer": 0,
+        "explain": "DaemonSets are indexed by node, not by replica count. Losing a node means losing that node's copy, and nothing anywhere else should compensate. Its DESIRED number simply drops."
+      },
+      "body": "The DaemonSet's desired count drops from 3 to 2, matching the surviving nodes. There is nothing to replace.\n\nThis is also why DaemonSet pods carry very broad tolerations — including for unreachable and not-ready nodes. Infrastructure like the CNI must be able to run on a node that is NotReady, otherwise a node could never recover its networking: the CNI is a pod, and the node stays NotReady until the CNI is running.",
+      "code": {
+        "lang": "bash",
+        "label": "the count follows the fleet",
+        "text": "$ kubectl -n kube-system get ds rke2-canal\nNAME         DESIRED   CURRENT   READY   AGE\nrke2-canal   2         2         2       80d      # was 3"
+      }
+    },
+    {
+      "actor": "03:19:40",
+      "title": "And postgres-0 does not move at all",
+      "ask": {
+        "prompt": "`postgres-0` from a StatefulSet is Terminating on the dead node. Why is no replacement started?",
+        "choices": [
+          "StatefulSet identity must be unique, and while the node is unreachable the control plane cannot prove the old pod is really gone",
+          "StatefulSets are not managed by controllers",
+          "The scheduler refuses to place pods with PersistentVolumeClaims",
+          "Its PodDisruptionBudget forbids it"
+        ],
+        "answer": 0,
+        "explain": "Unreachable is not the same as dead. Starting a second `postgres-0` while the first might still be running and writing to the same disk is how you corrupt a database. Kubernetes chooses to stay stuck rather than risk it."
+      },
+      "body": "This is the pod that is still broken when you wake up.\n\nA Deployment pod is interchangeable, so making another one is safe. `postgres-0` is not: there must only ever be one, and it owns a specific disk. From the control plane's point of view node3 is *unreachable*, not *confirmed dead* — and those are very different things when the wrong answer means two writers on one filesystem.\n\nSo it waits. Indefinitely.",
+      "code": {
+        "lang": "bash",
+        "label": "stuck, and correctly so",
+        "text": "$ kubectl get pods -l app=postgres\nNAME         READY   STATUS        NODE     AGE\npostgres-0   1/1     Terminating   node3    21d      # forever, until you act\n\n$ kubectl get pvc data-postgres-0\nNAME              STATUS   VOLUME     CAPACITY\ndata-postgres-0   Bound    pvc-8a1f   100Gi        # still bound to the same disk"
+      }
+    },
+    {
+      "actor": "the volume",
+      "title": "And the disk is still attached to a dead machine",
+      "body": "Even if the pod were replaced, the volume is a second obstacle. A ReadWriteOnce volume can be attached to exactly one node, and the cluster still believes it is attached to node3.\n\nThe attach-detach controller waits (about six minutes) before force-detaching, and on many storage backends that only fully resolves once the Node object is gone. Until then any replacement pod sits in `ContainerCreating` with `Multi-Attach error`.",
+      "code": {
+        "lang": "bash",
+        "label": "follow the attachment",
+        "text": "$ kubectl get volumeattachment | grep pvc-8a1f\nNAME       ATTACHER               PV         NODE    ATTACHED\ncsi-9f2a   csi.trident.netapp.io   pvc-8a1f   node3   true\n\n$ kubectl describe pod postgres-0 | tail -3\n  Warning  FailedAttachVolume  Multi-Attach error for volume \"pvc-8a1f\":\n           Volume is already exclusively attached to one node and can't be attached to another"
+      }
+    },
+    {
+      "actor": "07:00, you",
+      "title": "The one decision that unsticks it",
+      "ask": {
+        "prompt": "You have confirmed node3's hardware is dead and will not return. What actually releases postgres-0?",
+        "choices": [
+          "Deleting the Node object — that is the cluster's signal that the machine is really gone, releasing the pod and the volume attachment",
+          "kubectl delete pod postgres-0 --force --grace-period=0, on its own",
+          "Restarting kube-controller-manager",
+          "Deleting and recreating the PersistentVolumeClaim"
+        ],
+        "answer": 0,
+        "explain": "Deleting the Node is you supplying the one piece of information the control plane could not get for itself: the machine is gone, nothing is running on it. That lets the pod be removed and the volume detached. Force-deleting the pod alone can leave the volume attachment behind — and if the node were only partitioned rather than dead, it would be exactly the double-writer scenario the system was protecting you from."
+      },
+      "body": "The whole stall is the cluster refusing to guess. You supply the fact it is missing.\n\nOnce the Node object is deleted, `postgres-0` is removed, the VolumeAttachment is released, and a fresh `postgres-0` is scheduled onto a surviving node, reattaching `data-postgres-0` — the same disk, the same data.\n\nBefore you type it, be certain. If the machine is actually alive behind a partition, you have just authorized a second writer.",
+      "code": {
+        "lang": "bash",
+        "label": "the recovery, in order",
+        "text": "# 1. be sure. console, IPMI, hypervisor - not just ping\n# 2. then:\n$ kubectl delete node node3\n\n$ kubectl get pods -l app=postgres -o wide\nNAME         READY   STATUS    NODE     AGE\npostgres-0   1/1     Running   node1    40s      # same PVC, same data\n\n# if the node ever comes back, it re-registers as a fresh node"
+      }
+    }
+  ],
+  "takeaways": [
+    "The default timeline is ~40s to NotReady, then ~5 more minutes before pods are evicted. Roughly 5m40s to failover.",
+    "`Unknown` conditions mean the kubelet is silent — go to the machine. `False` means it is alive and telling you the problem.",
+    "Nothing is migrated. Controllers create replacements; DaemonSets simply have one fewer node to cover.",
+    "StatefulSet pods and ReadWriteOnce volumes deliberately stay stuck, because unreachable is not the same as dead. Deleting the Node object is how you tell the cluster which it was."
+  ]
+}

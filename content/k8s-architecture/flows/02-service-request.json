@@ -1,0 +1,148 @@
+{
+  "id": "service-request",
+  "title": "One pod calls another: the whole packet path",
+  "subtitle": "DNS, a virtual IP that nothing listens on, and the kernel",
+  "minutes": 7,
+  "scenario": "A pod in namespace `prod` runs `curl http://api/health`. There are three `api` pods, on three different nodes.\n\nNothing anywhere is listening on the Service IP. There is no proxy process in the path. Follow the packet and see what actually moves it.",
+  "concepts": [
+    "k8s-architecture/networking/coredns",
+    "k8s-architecture/networking/services",
+    "k8s-architecture/networking/pod-network",
+    "k8s-architecture/networking/ingress-netpol"
+  ],
+  "steps": [
+    {
+      "actor": "the pod's resolver",
+      "title": "`api` is not a name yet",
+      "ask": {
+        "prompt": "The caller is in namespace `prod`. What does its resolver actually query first for the bare name `api`?",
+        "choices": [
+          "api.prod.svc.cluster.local — the first search domain from /etc/resolv.conf",
+          "api — sent as-is, because it is a valid hostname",
+          "api.cluster.local",
+          "api.default.svc.cluster.local"
+        ],
+        "answer": 0,
+        "explain": "The kubelet writes the search list into every pod's resolv.conf, own namespace first. This is why `api` reaches a Service in your own namespace but you need `api.payments` to reach one next door."
+      },
+      "body": "The kubelet wrote `/etc/resolv.conf` when the pod started. It points at the CoreDNS Service and lists search domains, own namespace first.\n\nThe `ndots:5` line matters more than it looks: any name with fewer than 5 dots gets tried against every search domain **before** being tried as-is. Great for short in-cluster names, expensive for external ones — `api.github.com` costs three failed lookups before the real one.",
+      "code": {
+        "lang": "bash",
+        "label": "inside the calling pod",
+        "text": "$ cat /etc/resolv.conf\nnameserver 10.43.0.10\nsearch prod.svc.cluster.local svc.cluster.local cluster.local\noptions ndots:5\n\n$ nslookup api\nName:    api.prod.svc.cluster.local\nAddress: 10.43.12.201"
+      }
+    },
+    {
+      "actor": "CoreDNS",
+      "title": "A name becomes a virtual IP",
+      "body": "CoreDNS answers with the Service's **ClusterIP**: `10.43.12.201`.\n\nNotice what it did *not* return. Not a pod IP, not a list of pod IPs, not a node address. One stable virtual IP that will outlive every pod behind it.\n\n(The exception is a headless Service — `clusterIP: None` — where DNS returns the pod IPs directly. That is what StatefulSets use, so you can address `postgres-0` specifically.)",
+      "code": {
+        "lang": "bash",
+        "label": "the two flavors, side by side",
+        "text": "$ kubectl get svc api postgres\nNAME       TYPE        CLUSTER-IP     PORT(S)\napi        ClusterIP   10.43.12.201   80/TCP\npostgres   ClusterIP   None           5432/TCP\n\n$ nslookup postgres\nAddress: 10.42.1.9      # the pod itself\nAddress: 10.42.2.4"
+      },
+      "watch": "If a name resolves but connections hang, DNS has done its job — stop looking there and go to endpoints or NetworkPolicy."
+    },
+    {
+      "actor": "the caller",
+      "title": "The packet leaves, addressed to nothing",
+      "ask": {
+        "prompt": "What process is listening on 10.43.12.201:80?",
+        "choices": [
+          "Nothing. No process anywhere binds a ClusterIP",
+          "kube-proxy, which accepts and forwards the connection",
+          "The CoreDNS pod, acting as a proxy",
+          "One of the api pods, which claims the IP"
+        ],
+        "answer": 0,
+        "explain": "A ClusterIP is a fiction maintained by the kernel. Nothing answers ARP for it and nothing binds it. This is why you often cannot ping a ClusterIP, and why tcpdump on the node shows pod IPs rather than Service IPs."
+      },
+      "body": "curl opens a TCP connection to `10.43.12.201:80`. The packet leaves the pod's network namespace addressed to an IP that exists nowhere.\n\nIt does not get far before the kernel rewrites it.",
+      "code": {
+        "lang": "bash",
+        "label": "the Service CIDR is not the pod CIDR",
+        "text": "# RKE2 defaults\n#   10.42.0.0/16   pods       - real addresses on real interfaces\n#   10.43.0.0/16   services   - virtual, exists only as kernel rules",
+        "note": "Seeing 10.42.x versus 10.43.x tells you instantly whether you are looking at something real or something virtual."
+      }
+    },
+    {
+      "actor": "kube-proxy's rules",
+      "title": "The kernel picks a backend and rewrites the address",
+      "body": "On this node, kube-proxy has already written iptables (or IPVS) rules for every Service in the cluster. It did that by watching Services and **EndpointSlices** — it is not in the data path itself, it only programs it.\n\nThe rule chain for `api` matches the destination, then picks one endpoint at random and DNATs the packet to that pod's real IP.\n\nThat `--probability` line is the entire load-balancing algorithm: random, per new connection. No least-connections, no health-aware retries, no stickiness beyond what conntrack remembers.",
+      "code": {
+        "lang": "bash",
+        "label": "the actual rules on the node",
+        "text": "$ iptables-save -t nat | grep 10.43.12.201\n-A KUBE-SERVICES -d 10.43.12.201/32 -p tcp --dport 80 -j KUBE-SVC-XN3\n\n$ iptables-save -t nat | grep KUBE-SVC-XN3\n-A KUBE-SVC-XN3 -m statistic --mode random --probability 0.33333 -j KUBE-SEP-A\n-A KUBE-SVC-XN3 -m statistic --mode random --probability 0.50000 -j KUBE-SEP-B\n-A KUBE-SVC-XN3 -j KUBE-SEP-C\n\n$ iptables-save -t nat | grep KUBE-SEP-A\n-A KUBE-SEP-A -p tcp -j DNAT --to-destination 10.42.2.9:8080"
+      }
+    },
+    {
+      "actor": "the CNI",
+      "title": "The packet crosses to another node",
+      "body": "The destination is now `10.42.2.9`, a real pod IP on node3. The CNI moves it there — with Canal that means wrapping it in a VXLAN packet between the two node IPs, unwrapping on the far side.\n\nThis is where MTU bites. VXLAN adds about 50 bytes. If the pod MTU was not reduced to match, small packets sail through and full-size ones are silently dropped: handshakes work, large responses hang forever.",
+      "code": {
+        "lang": "bash",
+        "label": "the MTU test worth memorizing",
+        "text": "# works: small request\n$ kubectl exec -it debug -- curl -s http://api/health\n\n# hangs: large response\n$ kubectl exec -it debug -- curl -s http://api/dump\n\n# confirm with a do-not-fragment ping just under the tunnel size\n$ kubectl exec -it debug -- ping -M do -s 1422 10.42.2.9"
+      }
+    },
+    {
+      "actor": "NetworkPolicy",
+      "title": "Two independent verdicts, not one",
+      "ask": {
+        "prompt": "Namespace `prod` has a default-deny egress policy. Namespace `payments` allows ingress from `prod`. Can a prod pod reach a payments pod?",
+        "choices": [
+          "No — egress is judged at the source and ingress at the destination, and both must allow it",
+          "Yes — the destination's allow rule is what counts",
+          "Yes, if both namespaces share a CNI",
+          "Only for TCP; UDP is always denied"
+        ],
+        "answer": 0,
+        "explain": "Two separate checks in two separate places. It is also why a default-deny egress policy that forgets UDP/TCP 53 to CoreDNS breaks every app in the namespace at once — DNS is egress traffic too."
+      },
+      "body": "If either pod is selected by a NetworkPolicy, the CNI enforces it — Calico, in Canal's case. A pod that no policy selects accepts everything; the moment one selects it, only what is explicitly allowed gets through.\n\nEgress is evaluated at the caller, ingress at the callee, and they are completely independent. When debugging, always check both ends.",
+      "code": {
+        "lang": "yaml",
+        "label": "the rule people forget",
+        "text": "# ship this in the same commit as any default-deny egress\negress:\n- to:\n  - namespaceSelector:\n      matchLabels: { kubernetes.io/metadata.name: kube-system }\n    podSelector:\n      matchLabels: { k8s-app: kube-dns }\n  ports:\n  - { protocol: UDP, port: 53 }\n  - { protocol: TCP, port: 53 }"
+      }
+    },
+    {
+      "actor": "conntrack",
+      "title": "The reply finds its way home",
+      "body": "The api pod replies from `10.42.2.9`. On the way back, the source node's **conntrack** table reverses the translation, so the caller sees a reply from `10.43.12.201` — the address it actually dialed.\n\nWithout that, the caller would receive a packet from an IP it never contacted and drop it. Conntrack is also why a Service connection stays pinned to one backend for its lifetime even though selection was random.",
+      "code": {
+        "lang": "bash",
+        "label": "the translation, live",
+        "text": "$ conntrack -L | grep 10.43.12.201\ntcp 6 86398 ESTABLISHED src=10.42.0.31 dst=10.43.12.201 sport=52344 dport=80\n                        src=10.42.2.9 dst=10.42.0.31 sport=8080 dport=52344",
+        "note": "Two lines: what the pod thinks it is talking to, and what is really happening."
+      }
+    },
+    {
+      "actor": "you, later",
+      "title": "When it breaks, walk the same path",
+      "ask": {
+        "prompt": "`curl api` returns connection refused. `nslookup api` returns the ClusterIP correctly. Where do you look first?",
+        "choices": [
+          "EndpointSlices — an empty one means the selector matches nothing or nothing is Ready",
+          "CoreDNS logs, since name resolution is the usual culprit",
+          "The MTU on the CNI",
+          "kube-proxy's leader election"
+        ],
+        "answer": 0,
+        "explain": "Resolution worked, so DNS is cleared. An empty EndpointSlice is the single most common cause and takes one command to rule in or out — and it is not really a networking problem at all, it is a labels-or-readiness problem."
+      },
+      "body": "The path gives you an ordered checklist, and each step is one command:\n\n- **Does the name resolve?** `nslookup api` — no means CoreDNS or resolv.conf.\n- **Does the Service have backends?** `kubectl get endpointslices` — empty means selector mismatch or nothing Ready.\n- **Do the rules exist on the node?** `iptables-save -t nat | grep <clusterIP>`.\n- **Is a policy dropping it?** Check egress at the source *and* ingress at the destination.\n- **Is it only large payloads?** MTU.\n\nAnswering in that order beats guessing, every time.",
+      "code": {
+        "lang": "bash",
+        "label": "the four commands, in order",
+        "text": "$ kubectl exec -it debug -- nslookup api\n$ kubectl get endpointslices -l kubernetes.io/service-name=api\n$ kubectl get pods -l app=api -o wide          # are they Ready?\n$ kubectl get networkpolicy -A"
+      }
+    }
+  ],
+  "takeaways": [
+    "A ClusterIP has no listener. It is a kernel rewrite rule that kube-proxy programs from EndpointSlices.",
+    "Load balancing is random per connection — nothing more sophisticated is happening.",
+    "Only Ready pods are in an EndpointSlice, which is what makes the readiness probe meaningful.",
+    "DNS resolving proves DNS works. From there the fault is endpoints, policy or MTU — in that order of likelihood."
+  ]
+}

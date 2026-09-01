@@ -80,7 +80,7 @@
             "A virtual cluster with its own API server"
           ],
           "answer": 0,
-          "explain": "Kubernetes has no layer above namespaces. Rancher synthesises one, which is why project permissions appear as ordinary RoleBindings when you inspect a namespace with kubectl — and why removing those bindings by hand gets them recreated.",
+          "explain": "Kubernetes has no layer above namespaces. Rancher synthesizes one, which is why project permissions appear as ordinary RoleBindings when you inspect a namespace with kubectl — and why removing those bindings by hand gets them recreated.",
           "tag": "rancher"
         }
       ]
@@ -245,7 +245,7 @@
     {
       "id": "fleet",
       "title": "Fleet: GitOps at cluster scale",
-      "brief": "Fleet is Rancher's built-in GitOps engine, designed for **many clusters** rather than one.\n\nThe object chain:\n\n- **GitRepo** — a repo, branch and set of paths to watch (lives in the local cluster, usually in `fleet-default`)\n- **Bundle** — what Fleet rendered from those paths: raw YAML, Helm chart or Kustomize output\n- **BundleDeployment** — one per target cluster, representing that bundle's state on that cluster\n- **fleet-agent** — runs in each downstream cluster and applies its BundleDeployments\n\nTargeting is by **cluster labels and cluster groups**, not by naming clusters. `env=prod` selects every production cluster now and in the future — that is the whole point at fleet scale.\n\nPer-target customisation comes from `fleet.yaml` in the repo: different Helm values per cluster group, path exclusions, and Helm options.\n\nWhen a GitRepo shows `NotReady`, the diagnosis walks the chain downward: GitRepo → Bundle → BundleDeployment → the resources themselves.",
+      "brief": "Fleet is Rancher's built-in GitOps engine, designed for **many clusters** rather than one.\n\nThe object chain:\n\n- **GitRepo** — a repo, branch and set of paths to watch (lives in the local cluster, usually in `fleet-default`)\n- **Bundle** — what Fleet rendered from those paths: raw YAML, Helm chart or Kustomize output\n- **BundleDeployment** — one per target cluster, representing that bundle's state on that cluster\n- **fleet-agent** — runs in each downstream cluster and applies its BundleDeployments\n\nTargeting is by **cluster labels and cluster groups**, not by naming clusters. `env=prod` selects every production cluster now and in the future — that is the whole point at fleet scale.\n\nPer-target customization comes from `fleet.yaml` in the repo: different Helm values per cluster group, path exclusions, and Helm options.\n\nWhen a GitRepo shows `NotReady`, the diagnosis walks the chain downward: GitRepo → Bundle → BundleDeployment → the resources themselves.",
       "examples": [
         {
           "label": "A GitRepo targeting by label",
@@ -296,7 +296,7 @@
         {
           "id": "fleet-customization",
           "type": "fill",
-          "prompt": "Which file in a Fleet-watched repo path controls Helm values, namespaces and per-target customisation?",
+          "prompt": "Which file in a Fleet-watched repo path controls Helm values, namespaces and per-target customization?",
           "accept": ["fleet.yaml", "fleet.yml"],
           "placeholder": "filename",
           "explain": "`fleet.yaml` sits in the watched path and configures how that path is rendered — chart, version, values, `targetCustomizations` and namespace defaults."
@@ -306,7 +306,7 @@
           "type": "mcq",
           "prompt": "What distinguishes Fleet from a single-cluster Argo CD or Flux installation?",
           "choices": [
-            "It is built for fan-out: one GitRepo renders per-cluster BundleDeployments across many clusters, with per-group customisation",
+            "It is built for fan-out: one GitRepo renders per-cluster BundleDeployments across many clusters, with per-group customization",
             "It applies manifests without needing an agent in the cluster",
             "It only supports raw YAML, not Helm or Kustomize",
             "It stores rendered state outside Kubernetes"

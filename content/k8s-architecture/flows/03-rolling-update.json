@@ -1,0 +1,159 @@
+{
+  "id": "rolling-update",
+  "title": "A rolling update, and where the 502s come from",
+  "subtitle": "Surge, probes, endpoint propagation and the shutdown race",
+  "minutes": 7,
+  "scenario": "You change the image tag on a Deployment with 4 replicas and run `kubectl apply`. Users report a handful of 502s during every deploy, and nobody has ever worked out why.\n\nWalk the rollout one move at a time and the 502s stop being mysterious.",
+  "concepts": [
+    "k8s-architecture/controllers/rollouts",
+    "k8s-architecture/failure-modes/probes",
+    "k8s-architecture/networking/services",
+    "k8s-architecture/scheduling/priority-pdb"
+  ],
+  "steps": [
+    {
+      "actor": "deployment controller",
+      "title": "Nothing is updated — something new is created",
+      "ask": {
+        "prompt": "You changed only the image tag. What does the deployment controller do?",
+        "choices": [
+          "Creates a second ReplicaSet with a new pod-template hash and starts shifting replicas to it",
+          "Updates the image field on each existing pod, in place",
+          "Deletes all 4 pods and recreates them from the same ReplicaSet",
+          "Tells each kubelet to pull the new image and restart its container"
+        ],
+        "answer": 0,
+        "explain": "The unit of change is the ReplicaSet, never the pod. That is exactly why rollback is cheap: the old ReplicaSet is still sitting there at 0 replicas, and `rollout undo` just scales it back up."
+      },
+      "body": "The pod template changed, so its hash changed, so a **new ReplicaSet** is created. The old one is not deleted — it will be scaled down to 0 and kept as history.\n\nFor the next minute, two ReplicaSets exist at once: one draining, one filling. That overlap is the rollout.",
+      "code": {
+        "lang": "bash",
+        "label": "both, mid-roll",
+        "text": "$ kubectl get rs -l app=api\nNAME              DESIRED   CURRENT   READY   AGE\napi-6b8f9c7d4d    3         3         3       9d      # old\napi-7d4c5b8a91    1         1         0       3s      # new"
+      },
+      "watch": "`revisionHistoryLimit` (default 10) is how many old ReplicaSets are kept. Each one is what `rollout undo --to-revision` targets."
+    },
+    {
+      "actor": "the strategy",
+      "title": "maxSurge and maxUnavailable set the shape",
+      "ask": {
+        "prompt": "`replicas: 4`, `maxSurge: 25%`, `maxUnavailable: 25%`. What is the maximum number of pods and the minimum available during the roll?",
+        "choices": [
+          "Max 5 pods, min 3 available",
+          "Max 4 pods, min 3 available",
+          "Max 5 pods, min 4 available",
+          "Max 6 pods, min 2 available"
+        ],
+        "answer": 0,
+        "explain": "Percentages are of the replica count. Surge rounds up (4 + ceil(1) = 5), unavailable rounds down (4 - floor(1) = 3). Getting this wrong is how a rolling update quietly runs at 75% capacity during peak."
+      },
+      "body": "Two numbers decide the whole shape of the transition:\n\n- **maxSurge** — how many pods above the desired count may exist\n- **maxUnavailable** — how many below the desired count may be unready\n\n`maxUnavailable: 0` keeps full capacity but needs spare room in the cluster for the surge pod. `maxSurge: 0` never exceeds the count but dips in capacity. If you set `maxUnavailable: 0` and the cluster is full, the rollout simply stalls with a Pending pod and waits.",
+      "code": {
+        "lang": "yaml",
+        "label": "the knobs",
+        "text": "spec:\n  replicas: 4\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxSurge: 1          # at most 5 exist\n      maxUnavailable: 0    # never fewer than 4 ready\n  progressDeadlineSeconds: 600"
+      }
+    },
+    {
+      "actor": "kubelet",
+      "title": "A new pod starts — and is deliberately ignored",
+      "body": "The first new pod is scheduled and its container starts. It is **not** added to the Service yet.\n\nWhat gates that is the **readiness probe**. Until it passes, the endpointslice controller leaves the pod out of the EndpointSlice, so no traffic reaches it, and the rollout does not count it as available.\n\nThis is the mechanism that makes a rollout safe. A Deployment with no readiness probe declares every pod ready the instant its process starts — including one that will crash two seconds later while your old pods are already being torn down.",
+      "code": {
+        "lang": "yaml",
+        "label": "what each probe is actually for",
+        "text": "startupProbe:      # slow boot: hold the others off\n  httpGet: { path: /healthz, port: 8080 }\n  failureThreshold: 30\n  periodSeconds: 10\n\nreadinessProbe:    # should I get traffic right now?\n  httpGet: { path: /ready, port: 8080 }   # dependencies belong HERE\n  periodSeconds: 5\n\nlivenessProbe:     # is this process wedged? restart it\n  httpGet: { path: /healthz, port: 8080 } # NOT the database\n  periodSeconds: 10\n  failureThreshold: 3"
+      },
+      "watch": "A liveness probe that checks a database turns a 3-minute dependency outage into every replica restarting at once, with cold caches. Dependencies belong in readiness."
+    },
+    {
+      "actor": "endpointslice controller",
+      "title": "Ready means in rotation",
+      "body": "The readiness probe passes. The endpointslice controller adds the new pod's IP to the EndpointSlice, and kube-proxy on **every node** rewrites its rules to include it.\n\nOnly now is the new pod carrying traffic, and only now does the controller consider it available and start retiring an old one.",
+      "code": {
+        "lang": "bash",
+        "label": "watching the swap live",
+        "text": "$ kubectl get endpointslices -l kubernetes.io/service-name=api -w\nNAME        ENDPOINTS                                  AGE\napi-x7k2p   10.42.1.7,10.42.2.3,10.42.0.9              9d\napi-x7k2p   10.42.1.7,10.42.2.3,10.42.0.9,10.42.1.44   9d   # new one joins\napi-x7k2p   10.42.2.3,10.42.0.9,10.42.1.44             9d   # old one leaves"
+      }
+    },
+    {
+      "actor": "the old pod",
+      "title": "Here is where the 502s come from",
+      "ask": {
+        "prompt": "An old pod is being retired. Which of these describes what happens?",
+        "choices": [
+          "Endpoint removal and SIGTERM happen in parallel, with nothing coordinating them",
+          "The endpoint is removed, confirmed on all nodes, and only then is SIGTERM sent",
+          "SIGTERM is sent first, and the endpoint is removed once the process exits",
+          "The pod stops accepting connections the moment it is marked for deletion"
+        ],
+        "answer": 0,
+        "explain": "This is the whole bug. Two independent paths start at the same moment: the endpointslice controller begins removing the endpoint (and every node's kube-proxy must then catch up), while the kubelet sends SIGTERM. Nothing waits for the other."
+      },
+      "body": "Deleting a pod kicks off two things **at the same time**:\n\n- the endpointslice controller removes it, and every node's kube-proxy independently rewrites its rules — which takes a moment, and is not synchronized\n- the kubelet runs any `preStop` hook and then sends `SIGTERM`\n\nSo there is a window where your app has already started shutting down and some node's rules still point at it. Connections arriving in that window get refused. That is your 502.\n\nIt is worse the bigger the cluster, because there are more nodes to update.",
+      "code": {
+        "lang": "text",
+        "label": "the race, drawn",
+        "text": "pod marked for deletion\n  |\n  |-- endpointslice controller removes the endpoint\n  |     -> node1 kube-proxy rewrites   (a few hundred ms)\n  |     -> node2 kube-proxy rewrites   (a bit later)\n  |     -> node3 kube-proxy rewrites   (later still)   <-- traffic still arriving\n  |\n  \\-- kubelet: preStop hook, then SIGTERM\n        -> your app starts draining     <-- but it already stopped accepting\n        -> SIGKILL at the end of the grace period"
+      }
+    },
+    {
+      "actor": "you",
+      "title": "The fix is a sleep, and it is not a hack",
+      "ask": {
+        "prompt": "`terminationGracePeriodSeconds: 30`, a preStop sleep of 10s, and the app needs 25s to finish in-flight work. What happens?",
+        "choices": [
+          "SIGKILL lands mid-drain — the grace period covers preStop plus draining, and 35s does not fit in 30s",
+          "The grace period restarts once preStop finishes, so there is 30s to drain",
+          "The kubelet extends the period automatically while connections are open",
+          "The pod is evicted rather than killed, so nothing is lost"
+        ],
+        "answer": 0,
+        "explain": "One clock, started when deletion begins, covering everything. Size it as preStop + worst-case drain + margin. Here you want 45 to 60 seconds."
+      },
+      "body": "Add a `preStop` hook that just sleeps for a few seconds. The kubelet runs it **before** SIGTERM, so the pod keeps serving normally while endpoint removal propagates. Then SIGTERM arrives and the app drains into a rotation that no longer points at it.\n\nFive to ten seconds is usually enough. Make sure `terminationGracePeriodSeconds` is comfortably larger than the sleep plus your real drain time, because it is one clock covering both.",
+      "code": {
+        "lang": "yaml",
+        "label": "the whole fix",
+        "text": "spec:\n  terminationGracePeriodSeconds: 45\n  containers:\n  - name: api\n    lifecycle:\n      preStop:\n        exec:\n          command: [\"/bin/sh\", \"-c\", \"sleep 8\"]",
+        "note": "Also make sure your app actually handles SIGTERM by draining rather than exiting immediately."
+      }
+    },
+    {
+      "actor": "PodDisruptionBudget",
+      "title": "The same pods, a different kind of disruption",
+      "body": "A rollout is the Deployment controller managing its own pods, so PDBs do not constrain it — `maxUnavailable` already does that job.\n\nPDBs govern **voluntary disruption from outside**: `kubectl drain` during a node upgrade, or the cluster-autoscaler removing a node. Those go through the Eviction API, which is what a PDB gates.\n\nThe classic trap: 2 replicas with `minAvailable: 2`. Allowed disruptions is zero, so the first drain of your next cluster upgrade retries forever and the upgrade hangs on node 1 of 12.",
+      "code": {
+        "lang": "bash",
+        "label": "check this before every node upgrade",
+        "text": "$ kubectl get pdb -A\nNAMESPACE   NAME   MIN AVAILABLE   ALLOWED DISRUPTIONS\nprod        api    2               0            # <-- a drain will hang here\nprod        web    1               2\n\n$ kubectl drain node4 --ignore-daemonsets\nerror when evicting pods/\"api-7d4c\" -n \"prod\" (will retry after 5s):\n  Cannot evict pod as it would violate the pod's disruption budget."
+      }
+    },
+    {
+      "actor": "the deadline",
+      "title": "When it stalls, nothing rescues you",
+      "ask": {
+        "prompt": "The new pods never pass readiness. After 10 minutes the Deployment reports `ProgressDeadlineExceeded`. What did Kubernetes do about it?",
+        "choices": [
+          "Nothing — it set a condition and left both ReplicaSets in place; rolling back is a decision someone else makes",
+          "Automatically rolled back to the previous revision",
+          "Deleted the new ReplicaSet and restored the old count",
+          "Paused the rollout and alerted the controller-manager"
+        ],
+        "answer": 0,
+        "explain": "There is no auto-rollback in core Kubernetes. The condition is a signal for your CD tooling or a human. The old pods are still serving, which is why a stalled rollout is usually not an outage — as long as maxUnavailable let them stay."
+      },
+      "body": "`progressDeadlineSeconds` (600 by default) is how long the rollout may make no progress before it is marked failed. When it expires you get `Progressing=False, reason=ProgressDeadlineExceeded` — and that is all.\n\nYour old pods keep serving. Rolling back is `kubectl rollout undo`, which simply scales the previous ReplicaSet back up.",
+      "code": {
+        "lang": "bash",
+        "label": "diagnose and reverse",
+        "text": "$ kubectl rollout status deploy/api\nWaiting for deployment \"api\" rollout to finish: 1 of 4 updated replicas are available...\n\n$ kubectl describe deploy api | grep -A4 Conditions\n  Type           Status  Reason\n  Available      True    MinimumReplicasAvailable\n  Progressing    False   ProgressDeadlineExceeded\n\n$ kubectl rollout undo deploy/api"
+      }
+    }
+  ],
+  "takeaways": [
+    "A rollout is two ReplicaSets overlapping. Rollback is just scaling the old one back up.",
+    "Readiness is what gates both traffic and rollout progress. Without it, a rollout has no safety at all.",
+    "Endpoint removal and SIGTERM race each other. A preStop sleep of 5-10 seconds is the fix for deploy-time 502s.",
+    "PDBs do not constrain rollouts — they constrain drains. A PDB equal to the replica count deadlocks your next upgrade."
+  ]
+}

@@ -65,7 +65,7 @@ export function buildQueue(opts = {}) {
   }
 
   if (mode === 'unit') {
-    // Practising a unit on purpose: fill the whole session from that unit,
+    // Practicing a unit on purpose: fill the whole session from that unit,
     // due reviews first, then new material, then the weakest of the rest.
     const pool = itemsOfUnit(unitId);
     const due = dueItems(pool);
@@ -125,9 +125,9 @@ export function buildQueue(opts = {}) {
 /** New items are spread through the queue rather than front-loaded. */
 function interleave(due, fresh, rest) {
   const out = [];
-  const d = shuffle(due, 7).slice();
+  const d = shuffle(due).slice();
   const f = fresh.slice();
-  const r = shuffle(rest, 11).slice();
+  const r = shuffle(rest).slice();
   const total = d.length + f.length + r.length;
   const every = f.length ? Math.max(2, Math.floor(total / (f.length + 1))) : Infinity;
   let n = 0;

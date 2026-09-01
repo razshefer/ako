@@ -96,9 +96,11 @@ export function relDay(key) {
 export function pct(n) { return Math.round(n * 100); }
 export function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
-export function shuffle(arr, seed = Date.now()) {
+export function shuffle(arr, seed) {
+  // no seed = a genuinely different order every call, so answer positions
+  // can never be memorized instead of the answers
   const a = arr.slice();
-  let s = seed >>> 0;
+  let s = (seed ?? Math.floor(Math.random() * 4294967296)) >>> 0;
   const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(rnd() * (i + 1));

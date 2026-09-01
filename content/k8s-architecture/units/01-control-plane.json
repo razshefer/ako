@@ -6,7 +6,7 @@
     {
       "id": "apiserver",
       "title": "kube-apiserver",
-      "brief": "The API server is the **only** component that talks to etcd. Everything else — kubelet, scheduler, controllers, your `kubectl`, Rancher — goes through its REST API.\n\nThat design has consequences you feel in production:\n\n- It is **stateless**, so you can run three of them behind a load balancer and scale horizontally.\n- It is the choke point for authentication, authorisation and admission. There is no back door to etcd.\n- If it goes down, you lose *control* of the cluster, not the cluster. Running pods keep running; kubelets keep restarting crashed containers from their local view.\n\nIt also serves the **watch** API: clients open a long-lived connection and get a stream of add/update/delete events instead of polling. Every controller in the system is built on this.",
+      "brief": "The API server is the **only** component that talks to etcd. Everything else — kubelet, scheduler, controllers, your `kubectl`, Rancher — goes through its REST API.\n\nThat design has consequences you feel in production:\n\n- It is **stateless**, so you can run three of them behind a load balancer and scale horizontally.\n- It is the choke point for authentication, authorization and admission. There is no back door to etcd.\n- If it goes down, you lose *control* of the cluster, not the cluster. Running pods keep running; kubelets keep restarting crashed containers from their local view.\n\nIt also serves the **watch** API: clients open a long-lived connection and get a stream of add/update/delete events instead of polling. Every controller in the system is built on this.",
       "examples": [
         {
           "label": "Ask the API server about itself",
@@ -311,7 +311,7 @@
             "node1 has plenty of allocatable CPU left and is a fine candidate",
             "node1 is full and will be filtered out",
             "It checks live metrics from the metrics-server and skips node1",
-            "It refuses to schedule until utilisation drops"
+            "It refuses to schedule until utilization drops"
           ],
           "answer": 0,
           "explain": "Scheduling is a bookkeeping exercise over **requests**, not a load balancer over real usage. This is exactly how you end up with hot nodes: requests set far below real consumption. Fixing it means setting honest requests (or using a descheduler / VPA), not tuning the scheduler.",

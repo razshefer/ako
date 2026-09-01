@@ -16,5 +16,14 @@
     "08-rke2",
     "09-rancher",
     "10-failure-modes"
+  ],
+  "flows": [
+    "01-apply-to-running",
+    "02-service-request",
+    "03-rolling-update",
+    "04-node-dies",
+    "05-rke2-cluster-birth",
+    "06-etcd-quorum-loss",
+    "07-rancher-downstream"
   ]
 }

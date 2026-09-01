@@ -4,6 +4,8 @@ import { state, markConceptSeen, streak, todayStats } from '../store.js';
 import { buildQueue, createRun } from '../session.js';
 import { createExercise } from '../components/exercise.js';
 import { icons } from '../components/icons.js';
+import { glossify, setConceptOpener } from '../glossary.js';
+import { conceptSheet, closeConceptSheet } from '../components/conceptsheet.js';
 
 export function renderSession(root, opts) {
   const items = buildQueue(opts);
@@ -37,6 +39,7 @@ export function renderSession(root, opts) {
   const foot = el(`<div class="sess-foot"></div>`);
 
   quitBtn.onclick = () => {
+    closeConceptSheet();
     if (run.pos === 0 || confirm('Quit this session? Answers so far are saved.')) {
       run.finish();
       location.hash = opts.mode === 'concept' || opts.mode === 'unit' ? '#/library' : '#/';
@@ -45,6 +48,7 @@ export function renderSession(root, opts) {
 
   root.appendChild(view);
   root.appendChild(foot);
+  setConceptOpener((id) => conceptSheet(id, { backLabel: 'Back to session' }));
 
   function paintProgress() {
     progressBar.style.width = `${pct(run.progress)}%`;
@@ -69,9 +73,10 @@ export function renderSession(root, opts) {
       ${(c.examples || []).map((ex) => codeBlock(ex.code, ex.lang || 'yaml', ex.label || null, ex.note || null)).join('')}
     </div>`);
     body.appendChild(intro);
+    glossify(body);
     foot.className = 'sess-foot';
     foot.innerHTML = '';
-    const go = el('<button class="btn" type="button">Got it — practise this</button>');
+    const go = el('<button class="btn" type="button">Got it — practice this</button>');
     go.onclick = then;
     foot.appendChild(go);
     window.scrollTo(0, 0);
@@ -97,6 +102,7 @@ export function renderSession(root, opts) {
     if (kicker) kicker.insertAdjacentHTML('afterbegin', chips);
     else ex.node.insertAdjacentHTML('afterbegin', `<div class="q-kicker">${chips}</div>`);
     body.appendChild(ex.node);
+    glossify(body);
     window.scrollTo(0, 0);
 
     foot.className = 'sess-foot';
@@ -145,11 +151,9 @@ export function renderSession(root, opts) {
     </div>`);
     const btns = el('<div class="btn-row"></div>');
     if (concept) {
-      const why = el('<button class="btn ghost" type="button" style="flex:0 0 auto;width:auto;padding:12px 14px">Concept</button>');
-      why.onclick = () => {
-        run.finish();
-        location.hash = `#/concept/${encodeURIComponent(concept.id)}`;
-      };
+      const why = el('<button class="btn ghost" type="button" style="flex:0 0 auto;width:auto;padding:12px 14px">Explain</button>');
+      // opens over the session; closing it puts you back on this exact question
+      why.onclick = () => conceptSheet(concept.id, { backLabel: 'Back to session' });
       btns.appendChild(why);
     }
     const cont = el(`<button class="btn ${correct ? 'good' : 'danger'}" type="button">Continue</button>`);
@@ -157,6 +161,7 @@ export function renderSession(root, opts) {
     btns.appendChild(cont);
     panel.appendChild(btns);
     foot.appendChild(panel);
+    glossify(foot);
 
     document.onkeydown = (e) => {
       if (e.key === 'Enter') { e.preventDefault(); cont.click(); }
