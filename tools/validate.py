@@ -13,6 +13,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CONTENT = ROOT / "content"
 
+# pack titles carry emoji; Windows consoles default to cp1252
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 TYPES = {"mcq", "multi", "fill", "order", "match"}
 errors: list[str] = []
 warnings: list[str] = []
