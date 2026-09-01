@@ -1,6 +1,6 @@
-// Offline shell for Reps. App files are cache-first; content JSON is
+// Offline shell for Ako. App files are cache-first; content JSON is
 // network-first so edited packs show up without bumping the version.
-const VERSION = 'reps-v1';
+const VERSION = 'ako-v1';
 const SHELL = [
   './',
   './index.html',

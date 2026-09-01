@@ -1,4 +1,6 @@
-# Reps
+# Ako
+
+*Māori: to teach and to learn — one word, with no distinction between the two.*
 
 Duolingo-style drilling for technical subjects, built to be used on a phone in
 five-minute sessions. Ships with a **Kubernetes Architecture** pack written

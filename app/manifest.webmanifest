@@ -1,6 +1,6 @@
 {
-  "name": "Reps — daily practice",
-  "short_name": "Reps",
+  "name": "Ako — to teach and to learn",
+  "short_name": "Ako",
   "description": "Duolingo-style drilling for technical subjects, starting with Kubernetes architecture.",
   "start_url": "../index.html",
   "scope": "../",

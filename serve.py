@@ -1,4 +1,4 @@
-"""Tiny static server for Reps.
+"""Tiny static server for Ako.
 
     python serve.py            # http://localhost:8080
     python serve.py 9000       # pick a port
@@ -53,7 +53,7 @@ if __name__ == "__main__":
     socketserver.TCPServer.allow_reuse_address = True
     handler = partial(Handler, directory=str(ROOT))
     with socketserver.ThreadingTCPServer(("0.0.0.0", PORT), handler) as httpd:
-        print(f"\n  Reps is serving {ROOT}\n")
+        print(f"\n  Ako is serving {ROOT}\n")
         print(f"    this machine : http://localhost:{PORT}/")
         print(f"    your phone   : http://{lan_ip()}:{PORT}/\n")
         print("  Ctrl+C to stop.\n")

@@ -111,7 +111,7 @@ export function render() {
 }
 
 window.addEventListener('hashchange', () => { render(); });
-window.addEventListener('reps:render', () => { render(); });
+window.addEventListener('ako:render', () => { render(); });
 
 async function boot() {
   applyTheme();
@@ -121,7 +121,7 @@ async function boot() {
   } catch (e) {
     app.innerHTML = `<div class="screen" style="padding-top:60px"><div class="card">
       <h2>Content failed to load</h2>
-      <p class="muted small">Reps reads its lessons from <code class="inline">/content</code> over HTTP.
+      <p class="muted small">Ako reads its lessons from <code class="inline">/content</code> over HTTP.
       Open the app through a web server (see the README) rather than as a <code class="inline">file://</code> path.</p>
       <pre class="code">${esc(e.message)}</pre></div></div>`;
     return;

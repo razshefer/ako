@@ -2,7 +2,8 @@
 
     python tools/make_icons.py
 
-Draws a dark rounded tile with three ascending bars ("reps").
+Draws a dark rounded tile with three ascending bars: one idea, then two,
+then the whole thing.
 """
 import struct
 import zlib

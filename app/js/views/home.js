@@ -19,7 +19,7 @@ export function renderHome(root) {
 
   const wrap = el(`<div class="fade">
     <div class="topbar">
-      <h1>Reps</h1>
+      <h1>Ako</h1>
       <div class="spacer"></div>
       <span class="chip gold">${icons.flame}${s.current}</span>
       <span class="chip accent">${icons.bolt}${totalXP()}</span>
@@ -66,7 +66,7 @@ export function renderHome(root) {
       ${howItWorksHTML()}
       <button class="btn secondary sm" style="width:100%;margin-top:14px" type="button">Got it</button>
     </div>`);
-    card.querySelector('button').onclick = () => { dismissIntro(); window.dispatchEvent(new CustomEvent('reps:render')); };
+    card.querySelector('button').onclick = () => { dismissIntro(); window.dispatchEvent(new CustomEvent('ako:render')); };
     screen.appendChild(card);
   }
 
@@ -177,7 +177,7 @@ export function renderHome(root) {
       </button>`);
       row.onclick = () => {
         setActivePack(p.id);
-        window.dispatchEvent(new CustomEvent('reps:render'));
+        window.dispatchEvent(new CustomEvent('ako:render'));
       };
       others.appendChild(row);
     });

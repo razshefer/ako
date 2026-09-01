@@ -1,4 +1,4 @@
-# Reps on a cluster you already run.
+# Ako on a cluster you already run.
 #
 #   1. build and push the image (see Dockerfile)
 #   2. set the image, the host, and your TLS secret below
@@ -11,21 +11,21 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: reps
+  name: ako
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: reps
-  namespace: reps
-  labels: { app: reps }
+  name: ako
+  namespace: ako
+  labels: { app: ako }
 spec:
   replicas: 2
   selector:
-    matchLabels: { app: reps }
+    matchLabels: { app: ako }
   template:
     metadata:
-      labels: { app: reps }
+      labels: { app: ako }
     spec:
       securityContext:
         runAsNonRoot: true
@@ -33,7 +33,7 @@ spec:
         fsGroup: 101
       containers:
         - name: nginx
-          image: harbor.internal/platform/reps:1     # <-- your image
+          image: harbor.internal/platform/ako:1     # <-- your image
           ports:
             - { name: http, containerPort: 8080 }
           resources:
@@ -59,43 +59,43 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: reps
-  namespace: reps
+  name: ako
+  namespace: ako
 spec:
-  selector: { app: reps }
+  selector: { app: ako }
   ports:
     - { name: http, port: 80, targetPort: http }
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: reps
-  namespace: reps
+  name: ako
+  namespace: ako
 spec:
   maxUnavailable: 1           # not minAvailable: 2 - that would block node drains
   selector:
-    matchLabels: { app: reps }
+    matchLabels: { app: ako }
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: reps
-  namespace: reps
+  name: ako
+  namespace: ako
   annotations:
     # if you use cert-manager, this is all you need for a trusted cert
     cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
   tls:
-    - hosts: [reps.internal]          # <-- your host
-      secretName: reps-tls
+    - hosts: [ako.internal]          # <-- your host
+      secretName: ako-tls
   rules:
-    - host: reps.internal             # <-- your host
+    - host: ako.internal             # <-- your host
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: reps
+                name: ako
                 port: { name: http }

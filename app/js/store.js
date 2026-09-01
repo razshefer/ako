@@ -3,7 +3,7 @@
 import { today, addDays, daysBetween } from './util.js';
 import { grade, newRecord } from './srs.js';
 
-const KEY = 'reps.state.v1';
+const KEY = 'ako.state.v1';
 const SCHEMA = 1;
 
 export const DEFAULT_SETTINGS = {
@@ -175,7 +175,7 @@ export function exportJSON() { return JSON.stringify(state, null, 2); }
 
 export function importJSON(text) {
   const parsed = JSON.parse(text);
-  if (!parsed || typeof parsed !== 'object' || !parsed.records) throw new Error('Not a Reps backup file.');
+  if (!parsed || typeof parsed !== 'object' || !parsed.records) throw new Error('Not a Ako backup file.');
   const base = blank();
   Object.assign(state, base, parsed, {
     settings: { ...base.settings, ...(parsed.settings || {}) },

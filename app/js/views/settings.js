@@ -42,7 +42,7 @@ export function renderSettings(root) {
   const offline = el(`<div class="card">
     <div class="tiny" style="margin-bottom:8px">Offline install</div>
     <div class="small muted" style="margin-bottom:10px">
-      Whether this device can run Reps with no network and no laptop.
+      Whether this device can run Ako with no network and no laptop.
     </div>
     <div class="statuslist"></div>
     <button class="btn secondary sm" style="width:100%;margin-top:12px" type="button">Check again</button>
@@ -70,7 +70,7 @@ export function renderSettings(root) {
     const blob = new Blob([exportJSON()], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `reps-backup-${today()}.json`;
+    a.download = `ako-backup-${today()}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   };
@@ -83,7 +83,7 @@ export function renderSettings(root) {
     try {
       importJSON(io.value);
       toast('Progress restored');
-      window.dispatchEvent(new CustomEvent('reps:render'));
+      window.dispatchEvent(new CustomEvent('ako:render'));
     } catch (e) {
       toast(`Import failed: ${e.message}`);
     }
@@ -93,7 +93,7 @@ export function renderSettings(root) {
     if (confirm('Erase all answers, streaks and scheduling? Settings are kept.')) {
       resetProgress();
       toast('Progress cleared');
-      window.dispatchEvent(new CustomEvent('reps:render'));
+      window.dispatchEvent(new CustomEvent('ako:render'));
     }
   };
   bottomRow.append(restore, wipe);
@@ -117,7 +117,8 @@ export function renderSettings(root) {
   </div>`));
 
   screen.appendChild(el(`<div class="center small faint" style="padding:8px 0 20px">
-    Reps · local-first · no account, no server
+    <b style="color:var(--fg-dim)">ako</b> — Māori: to teach and to learn, one word for both<br>
+    local-first · no account, no server
   </div>`));
 
   root.appendChild(wrap);
@@ -177,7 +178,7 @@ export function renderSettings(root) {
         </div>`).join('') +
       `<div class="small" style="margin-top:10px;color:${ready ? 'var(--good)' : 'var(--fg-dim)'}">
         ${ready
-          ? 'This device can run Reps with no network. Try airplane mode.'
+          ? 'This device can run Ako with no network. Try airplane mode.'
           : 'Not fully offline yet — see DEPLOY.md.'}
       </div>`;
   }

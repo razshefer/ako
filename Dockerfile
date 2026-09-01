@@ -1,6 +1,6 @@
-# Static image for self-hosting Reps on a cluster you already run.
-#   docker build -t harbor.internal/platform/reps:1 .
-#   docker push  harbor.internal/platform/reps:1
+# Static image for self-hosting Ako on a cluster you already run.
+#   docker build -t harbor.internal/platform/ako:1 .
+#   docker push  harbor.internal/platform/ako:1
 FROM nginx:1.27-alpine
 
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf

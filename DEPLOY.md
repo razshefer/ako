@@ -2,7 +2,7 @@
 
 ## The short version
 
-Reps is a PWA. **Once installed, it runs entirely from your phone's storage** —
+Ako is a PWA. **Once installed, it runs entirely from your phone's storage** —
 no network, no laptop, no server. You can be on a plane.
 
 The catch is the *first* install. A phone will only cache an app for offline use
@@ -29,12 +29,12 @@ Free, permanent, and every `git push` becomes a deploy. The workflow in
 > There is nothing sensitive here — it is learning content and no progress data
 > ever leaves your phone — but if you would rather not publish it, use option B.
 
-1. Create an empty **public** repo on GitHub, e.g. `reps`. Do not add a README.
+1. Create an empty **public** repo on GitHub, e.g. `ako`. Do not add a README.
 
 2. Point this repo at it and push:
 
 ```bash
-git remote add origin https://github.com/<you>/reps.git
+git remote add origin https://github.com/<you>/ako.git
 ```
 
 ```bash
@@ -50,7 +50,7 @@ git branch -M main && git push -u origin main
 5. Your URL is:
 
 ```
-https://<you>.github.io/reps/
+https://<you>.github.io/ako/
 ```
 
 6. Open it **on your phone**, then:
@@ -70,7 +70,7 @@ site; serving it is a 60-line manifest, and it stays private to your network.
 This repo ships `Dockerfile`, `deploy/nginx.conf` and `deploy/kubernetes.yaml`.
 
 ```bash
-docker build -t harbor.internal/platform/reps:1 . && docker push harbor.internal/platform/reps:1
+docker build -t harbor.internal/platform/ako:1 . && docker push harbor.internal/platform/ako:1
 ```
 
 Edit `deploy/kubernetes.yaml` — set the image, the host and your TLS secret —
@@ -96,7 +96,7 @@ drain), a read-only root filesystem, and no CPU limit.
 
 If you want a URL in about 30 seconds and do not care where it lives:
 
-- **Netlify**: sign in, go to <https://app.netlify.com/drop>, drag the `reps`
+- **Netlify**: sign in, go to <https://app.netlify.com/drop>, drag the `ako`
   folder onto the page. You get an HTTPS URL immediately.
 - **Cloudflare Pages**: Workers & Pages → Create → Pages → Upload assets.
 

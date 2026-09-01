@@ -224,7 +224,7 @@ export function renderSession(root, opts) {
     }
 
     const again = el('<button class="btn" type="button">Another session</button>');
-    again.onclick = () => { window.dispatchEvent(new CustomEvent('reps:render')); };
+    again.onclick = () => { window.dispatchEvent(new CustomEvent('ako:render')); };
     const home = el('<button class="btn secondary" type="button">Done</button>');
     home.onclick = () => { location.hash = '#/'; };
     const row = el('<div class="btn-row"></div>');
