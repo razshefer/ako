@@ -1,0 +1,20 @@
+{
+  "id": "k8s-architecture",
+  "title": "Kubernetes Architecture",
+  "subtitle": "Control plane, nodes, RKE2 and Rancher",
+  "emoji": "☸️",
+  "accent": "#3ea6ff",
+  "description": "How a cluster is actually built: what each component does, who talks to whom, where state lives, and what breaks when a piece disappears. Written for people who run clusters rather than pass exams, with an RKE2 and Rancher slant.",
+  "units": [
+    "01-control-plane",
+    "02-node-runtime",
+    "03-request-path",
+    "04-controllers",
+    "05-scheduling",
+    "06-networking",
+    "07-storage",
+    "08-rke2",
+    "09-rancher",
+    "10-failure-modes"
+  ]
+}

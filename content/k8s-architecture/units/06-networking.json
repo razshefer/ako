@@ -1,0 +1,332 @@
+{
+  "id": "networking",
+  "title": "Cluster networking",
+  "summary": "The flat pod network, CNI, how a ClusterIP is really implemented, CoreDNS, Ingress and NetworkPolicy.",
+  "concepts": [
+    {
+      "id": "pod-network",
+      "title": "The flat pod network and CNI",
+      "brief": "Kubernetes assumes one thing about networking: **every pod can reach every other pod by IP, without NAT**. It does not implement that — a **CNI plugin** does.\n\nHow it usually works: each node gets a slice of the cluster CIDR (`podCIDR`, typically a /24), the CNI hands out IPs from that slice, and node-to-node traffic is either routed directly (Calico BGP or a routed underlay) or encapsulated in VXLAN (Flannel/Canal).\n\nRKE2 ships **Canal** by default (Flannel for the dataplane + Calico for NetworkPolicy), with Calico and Cilium as supported alternatives.\n\nThings that follow from the model:\n\n- Pod IPs are ephemeral — they change on every restart, which is why Services exist\n- All containers in a pod share one network namespace, so they talk over `localhost` and cannot both bind the same port\n- VXLAN adds ~50 bytes of overhead; if the underlay MTU is 1500 the pod MTU must drop to ~1450 or you get the classic 'small requests work, large ones hang' bug",
+      "examples": [
+        {
+          "label": "Per-node pod CIDRs",
+          "lang": "bash",
+          "code": "$ kubectl get nodes -o custom-columns=NAME:.metadata.name,CIDR:.spec.podCIDR\nNAME    CIDR\nnode1   10.42.0.0/24\nnode2   10.42.1.0/24\nnode3   10.42.2.0/24\n\n# RKE2 defaults\n#   cluster-cidr: 10.42.0.0/16   (pods)\n#   service-cidr: 10.43.0.0/16   (services)",
+          "note": "Seeing 10.42.x for a pod and 10.43.x for a Service is the quickest way to orient yourself on any RKE2/K3s cluster."
+        },
+        {
+          "label": "The MTU bug, in one command",
+          "lang": "bash",
+          "code": "# works\n$ kubectl exec -it debug -- curl -s http://api:8080/health\n\n# hangs forever on a large response = MTU mismatch\n$ kubectl exec -it debug -- curl -s http://api:8080/big-payload\n\n# confirm: ping with DF set, just under the encapsulated size\n$ kubectl exec -it debug -- ping -M do -s 1422 10.42.2.15",
+          "note": "TCP handshakes and small packets pass; anything that fills a full frame is silently dropped. Check the CNI MTU against the underlay, especially on VMs with jumbo frames or an extra tunnel."
+        }
+      ],
+      "items": [
+        {
+          "id": "network-model",
+          "type": "mcq",
+          "prompt": "What does the Kubernetes network model actually require?",
+          "choices": [
+            "Every pod can reach every other pod's IP directly, without NAT",
+            "Pods must be on the same L2 broadcast domain",
+            "All pod traffic must be encrypted",
+            "Every pod must have a routable address on the physical network"
+          ],
+          "answer": 0,
+          "explain": "That single requirement is the whole contract; how it is met (VXLAN, BGP, cloud routes, eBPF) is the CNI's business. Everything above — Services, DNS, NetworkPolicy — assumes flat reachability.",
+          "tag": "core idea"
+        },
+        {
+          "id": "rke2-cni",
+          "type": "mcq",
+          "prompt": "What is RKE2's default CNI, and what are its two halves?",
+          "choices": [
+            "Canal — Flannel for the dataplane, Calico for NetworkPolicy",
+            "Cilium — eBPF for both dataplane and policy",
+            "Calico alone, in BGP mode",
+            "kubenet with cloud routes"
+          ],
+          "answer": 0,
+          "explain": "Canal is the Flannel+Calico combination: VXLAN overlay from Flannel, policy enforcement from Calico. RKE2 also supports Calico, Cilium and Multus, chosen via `cni:` in `/etc/rancher/rke2/config.yaml` — at cluster creation time, not afterwards.",
+          "tag": "rke2"
+        },
+        {
+          "id": "mtu-symptom",
+          "type": "mcq",
+          "prompt": "Small HTTP requests between pods on different nodes succeed; large responses hang and time out. Most likely cause?",
+          "choices": [
+            "MTU mismatch — VXLAN overhead is not accounted for, so full-size frames are dropped",
+            "A NetworkPolicy blocking the response",
+            "CoreDNS returning stale records",
+            "kube-proxy iptables rules out of order"
+          ],
+          "answer": 0,
+          "explain": "Classic signature: the handshake and small payloads fit, big ones do not. Policies block connections outright, DNS fails at resolution. Check the CNI MTU against the underlay, minus ~50 bytes for VXLAN.",
+          "tag": "debugging"
+        },
+        {
+          "id": "pod-localhost",
+          "type": "mcq",
+          "prompt": "Two containers in the same pod both try to listen on port 8080. What happens?",
+          "choices": [
+            "The second fails to bind — containers in a pod share one network namespace",
+            "Both work; each container has its own network namespace",
+            "The kubelet remaps the second one to a free port",
+            "The pod is rejected at admission"
+          ],
+          "answer": 0,
+          "explain": "One IP and one port space per pod. That shared namespace is exactly what makes sidecars work (`localhost` calls, no service discovery) and what makes port collisions possible.",
+          "tag": "sandbox"
+        }
+      ]
+    },
+    {
+      "id": "services",
+      "title": "Services and kube-proxy",
+      "brief": "A ClusterIP is a **virtual IP that nothing listens on**. There is no process bound to `10.43.0.15`. Packets to it are rewritten in the kernel by rules that kube-proxy programs on every node.\n\nThe chain of objects:\n\n- **Service** — defines the virtual IP, ports and a pod selector\n- **EndpointSlice** — the actual backend pod IPs, maintained by the endpointslice controller from *ready* pods\n- **kube-proxy** — watches both and writes iptables (default) or IPVS rules that DNAT the ClusterIP to one of the endpoints\n\nConsequences worth internalising:\n\n- Load balancing is per-connection and random — no least-connections, no retries, no session tracking beyond conntrack\n- A pod failing its readiness probe is removed from EndpointSlices, which is what makes readiness meaningful\n- A Service with **no ready endpoints** gives connection refused/timeout — `kubectl get endpointslices` is the fastest diagnosis\n- **Headless** (`clusterIP: None`) skips all of this: DNS returns the pod IPs directly. That is what StatefulSets use.",
+      "examples": [
+        {
+          "label": "Service, EndpointSlice, iptables",
+          "lang": "bash",
+          "code": "$ kubectl get svc api\nNAME   TYPE        CLUSTER-IP     PORT(S)    AGE\napi    ClusterIP   10.43.12.201   80/TCP     14d\n\n$ kubectl get endpointslices -l kubernetes.io/service-name=api\nNAME        ADDRESSTYPE   ENDPOINTS                     PORTS\napi-x7k2p   IPv4          10.42.1.7,10.42.2.3           8080\n\n$ iptables-save -t nat | grep 10.43.12.201\n-A KUBE-SERVICES -d 10.43.12.201/32 -p tcp --dport 80 -j KUBE-SVC-XN3...\n-A KUBE-SVC-XN3... -m statistic --mode random --probability 0.5 -j KUBE-SEP-A...\n-A KUBE-SVC-XN3... -j KUBE-SEP-B...",
+          "note": "That `--probability 0.5` is the entire load balancing algorithm: random per new connection."
+        },
+        {
+          "label": "The empty-endpoints diagnosis",
+          "lang": "bash",
+          "code": "$ kubectl get endpointslices -l kubernetes.io/service-name=api\nNAME        ADDRESSTYPE   ENDPOINTS   PORTS\napi-x7k2p   IPv4          <unset>     <unset>\n\n# so: selector mismatch, or no pod is Ready\n$ kubectl get pods -l app=api -o wide\n$ kubectl get svc api -o jsonpath='{.spec.selector}'",
+          "note": "Two causes, both quick to check: the selector does not match any pod's labels, or the pods exist but fail readiness."
+        },
+        {
+          "label": "Service types, stacked",
+          "lang": "text",
+          "code": "ClusterIP     virtual IP, in-cluster only              (the base)\nNodePort      ClusterIP + a port on every node         (30000-32767)\nLoadBalancer  NodePort + an external LB provisioned     (cloud, or MetalLB / RKE2 ServiceLB on bare metal)\nExternalName  a CNAME in DNS, no proxying at all\nHeadless      clusterIP: None - DNS returns pod IPs, no virtual IP"
+        }
+      ],
+      "items": [
+        {
+          "id": "clusterip-nature",
+          "type": "mcq",
+          "prompt": "What is a ClusterIP, physically?",
+          "choices": [
+            "A virtual IP with no listener — iptables/IPVS rules on each node DNAT it to a pod IP",
+            "An IP assigned to a proxy pod that forwards traffic",
+            "An alias on the primary interface of every node",
+            "A DNS name resolved to a random pod IP at query time"
+          ],
+          "answer": 0,
+          "explain": "Nothing answers ARP for it and no process binds it. This explains why you cannot ping a ClusterIP on many setups, and why tcpdump on a node shows the pod IP, not the service IP.",
+          "tag": "core idea"
+        },
+        {
+          "id": "empty-endpoints",
+          "type": "mcq",
+          "prompt": "`curl api:80` from a pod gives connection refused. `kubectl get endpointslices` shows no addresses for the Service. What are the two things to check?",
+          "choices": [
+            "The Service selector versus the pod labels, and whether the pods are passing readiness",
+            "CoreDNS configuration and the search domains",
+            "The NodePort range and the firewall",
+            "kube-proxy mode and conntrack table size"
+          ],
+          "answer": 0,
+          "explain": "EndpointSlices only ever contain *ready* pods matching the selector. Empty means either nothing matched or nothing is ready. Both are one command away, and neither is a networking problem.",
+          "tag": "debugging"
+        },
+        {
+          "id": "service-flow",
+          "type": "order",
+          "prompt": "Order what happens when a pod connects to `api:80` (a ClusterIP Service).",
+          "steps": [
+            "CoreDNS resolves api.default.svc.cluster.local to the ClusterIP 10.43.12.201",
+            "The packet leaves the pod addressed to the ClusterIP",
+            "iptables/IPVS rules on the node DNAT the destination to one endpoint pod IP",
+            "The CNI routes the packet to the node hosting that pod",
+            "The reply is un-NATed by conntrack on the way back"
+          ],
+          "explain": "DNS gives you a virtual IP; the kernel gives you a real one. Knowing where each step happens tells you where to tcpdump when it breaks.",
+          "tag": "packet path"
+        },
+        {
+          "id": "headless",
+          "type": "mcq",
+          "prompt": "Why do StatefulSets use a headless Service (`clusterIP: None`)?",
+          "choices": [
+            "So DNS returns individual pod IPs, giving each replica a stable, addressable name",
+            "Because StatefulSet pods cannot be load balanced",
+            "To avoid consuming an IP from the service CIDR",
+            "Because kube-proxy does not support StatefulSets"
+          ],
+          "answer": 0,
+          "explain": "`web-0.web.default.svc.cluster.local` resolves to that specific pod. Databases and quorum systems need to address peers individually — a random-per-connection virtual IP is useless for that.",
+          "tag": "stateful"
+        },
+        {
+          "id": "lb-onprem",
+          "type": "mcq",
+          "prompt": "You create a `type: LoadBalancer` Service on a bare-metal RKE2 cluster with no cloud provider and no MetalLB. What happens?",
+          "choices": [
+            "RKE2's built-in ServiceLB (klipper-lb) can claim it using node IPs — otherwise it stays Pending with no external IP",
+            "It automatically falls back to NodePort behaviour with an external IP",
+            "The API server rejects the Service",
+            "kube-proxy assigns an IP from the service CIDR"
+          ],
+          "answer": 0,
+          "explain": "Nothing in core Kubernetes implements LoadBalancer — a controller must. RKE2 ships ServiceLB (enabled unless you set `disable-kube-proxy`/`disable: rke2-servicelb`), which runs a DaemonSet claiming the port on node IPs. MetalLB is the usual alternative for a real VIP.",
+          "tag": "rke2"
+        }
+      ]
+    },
+    {
+      "id": "coredns",
+      "title": "CoreDNS and resolution",
+      "brief": "CoreDNS runs as a Deployment; its Service (`kube-dns` in `kube-system`, usually `10.43.0.10`) is written into every pod's `/etc/resolv.conf` by the kubelet.\n\nThe part that surprises people is `ndots:5`. Any name with fewer than 5 dots is tried against every search domain **first** (see the resolv.conf below).\n\nSo `api.github.com` (2 dots) becomes four queries: `api.github.com.prod.svc.cluster.local`, `...svc.cluster.local`, `...cluster.local`, and finally `api.github.com`. Three NXDOMAINs before the answer. At high request rates this is a real source of latency and of CoreDNS load — the reason `dnsConfig` overrides and trailing-dot FQDNs exist.\n\nService names resolve as `<service>.<namespace>.svc.cluster.local`. Same namespace: `api` works. Different namespace: you need `api.other`.",
+      "examples": [
+        {
+          "label": "What a pod's resolver looks like",
+          "lang": "bash",
+          "code": "$ kubectl exec -it debug -n prod -- cat /etc/resolv.conf\nnameserver 10.43.0.10\nsearch prod.svc.cluster.local svc.cluster.local cluster.local\noptions ndots:5\n\n$ kubectl exec -it debug -n prod -- nslookup api\nName:   api.prod.svc.cluster.local\nAddress: 10.43.12.201"
+        },
+        {
+          "label": "Cutting the search-domain tax",
+          "lang": "yaml",
+          "code": "spec:\n  dnsConfig:\n    options:\n    - name: ndots\n      value: \"2\"\n# or use a fully qualified name with a trailing dot in the app:\n#   https://api.github.com.",
+          "note": "For a service making many external calls, this removes three failed lookups per request."
+        },
+        {
+          "label": "Is it DNS, or is it the Service?",
+          "lang": "bash",
+          "code": "# resolves but nothing answers -> Service/endpoints problem\n$ kubectl exec -it debug -- nslookup api.prod\n$ kubectl exec -it debug -- nc -zv 10.43.12.201 80\n\n# does not resolve at all -> CoreDNS or resolv.conf problem\n$ kubectl -n kube-system logs -l k8s-app=kube-dns --tail=50\n$ kubectl -n kube-system get cm rke2-coredns-rke2-coredns -o yaml"
+        }
+      ],
+      "items": [
+        {
+          "id": "ndots",
+          "type": "mcq",
+          "prompt": "A pod in namespace `prod` calls `api.github.com`. With default `ndots:5`, how many DNS queries are made?",
+          "choices": [
+            "Four — three search-domain attempts that NXDOMAIN, then the name itself",
+            "One — it is already a fully qualified name",
+            "Two — cluster.local then the real name",
+            "Eight — each search domain tried for A and AAAA"
+          ],
+          "answer": 0,
+          "explain": "Fewer than 5 dots means the search list is tried first. Three wasted round trips per lookup, on every external call. Fix with `dnsConfig.options ndots:2` or a trailing dot to make the name absolute. (With IPv6 enabled it really is doubled — the AAAA queries too.)",
+          "tag": "gotcha"
+        },
+        {
+          "id": "cross-ns-dns",
+          "type": "fill",
+          "prompt": "From a pod in namespace `prod`, what is the shortest name that resolves the Service `api` in namespace `payments`?",
+          "accept": ["api.payments", "api.payments.svc", "api.payments.svc.cluster.local"],
+          "placeholder": "dns name",
+          "explain": "`api.payments` — the search domain `svc.cluster.local` completes it. A bare `api` would resolve to `api.prod.svc.cluster.local`, which is a different Service (or nothing at all)."
+        },
+        {
+          "id": "dns-or-service",
+          "type": "mcq",
+          "prompt": "`nslookup api.prod` returns the ClusterIP correctly, but connections to it time out. Where is the fault?",
+          "choices": [
+            "Not DNS — look at endpoints, readiness, NetworkPolicy or the app's listen address",
+            "CoreDNS is returning a stale record",
+            "The search domains are wrong",
+            "kubelet wrote the wrong nameserver into resolv.conf"
+          ],
+          "answer": 0,
+          "explain": "Resolution succeeded, so DNS did its job. Next: does the Service have ready endpoints, is a NetworkPolicy dropping the connection, and is the container actually listening on 0.0.0.0 rather than 127.0.0.1?",
+          "tag": "debugging"
+        },
+        {
+          "id": "coredns-scale",
+          "type": "mcq",
+          "prompt": "CoreDNS pods are CPU-throttled and DNS latency across the cluster has spiked. Which is the *least* useful fix?",
+          "choices": [
+            "Increase the Service's ClusterIP range",
+            "Scale up CoreDNS replicas / raise its CPU limit",
+            "Lower ndots for chatty workloads to cut query volume",
+            "Deploy NodeLocal DNSCache"
+          ],
+          "answer": 0,
+          "explain": "The service CIDR has nothing to do with DNS load. The other three all attack the real problem: more capacity, fewer queries, or a per-node cache that keeps lookups off the network entirely.",
+          "tag": "scaling"
+        }
+      ]
+    },
+    {
+      "id": "ingress-netpol",
+      "title": "Ingress and NetworkPolicy",
+      "brief": "An **Ingress** object is just configuration. Without a controller reading it, nothing happens. RKE2 ships **ingress-nginx** as a DaemonSet by default, deployed through its helm-controller.\n\nThe path in: external LB / node port 80/443 → ingress controller pod → *directly to a backend pod IP* (the controller reads EndpointSlices itself and usually bypasses the ClusterIP entirely).\n\n**NetworkPolicy** is deny-by-default *once a pod is selected by any policy*:\n\n- A pod matched by no policy accepts everything\n- A pod matched by any policy with an `ingress` section accepts only what those rules allow\n- Ingress and egress are independent — an egress policy on the client and an ingress policy on the server must **both** allow the traffic\n- It is enforced by the CNI. Under Canal it is Calico doing the work; a CNI without policy support silently ignores your policies\n\nAnd the classic outage: a default-deny egress policy that forgets to allow UDP/TCP 53 to kube-system, which breaks DNS for every selected pod.",
+      "examples": [
+        {
+          "label": "Default deny, then allow what you need",
+          "lang": "yaml",
+          "code": "apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: default-deny-all\n  namespace: prod\nspec:\n  podSelector: {}            # every pod in the namespace\n  policyTypes: [Ingress, Egress]\n---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: allow-dns\n  namespace: prod\nspec:\n  podSelector: {}\n  policyTypes: [Egress]\n  egress:\n  - to:\n    - namespaceSelector:\n        matchLabels: { kubernetes.io/metadata.name: kube-system }\n      podSelector:\n        matchLabels: { k8s-app: kube-dns }\n    ports:\n    - { protocol: UDP, port: 53 }\n    - { protocol: TCP, port: 53 }",
+          "note": "Always ship the DNS allowance in the same commit as the default-deny. Forgetting it breaks everything in the namespace at once, in a way that looks like an application bug."
+        },
+        {
+          "label": "Ingress, and who implements it",
+          "lang": "bash",
+          "code": "$ kubectl get ingressclass\nNAME    CONTROLLER                      DEFAULT\nnginx   k8s.io/ingress-nginx            true\n\n$ kubectl -n kube-system get ds rke2-ingress-nginx-controller\nNAME                            DESIRED   CURRENT   READY\nrke2-ingress-nginx-controller   3         3         3",
+          "note": "On RKE2 it is a DaemonSet using hostPorts 80/443 — so your external load balancer points at the node IPs."
+        }
+      ],
+      "items": [
+        {
+          "id": "ingress-needs-controller",
+          "type": "mcq",
+          "prompt": "You apply an Ingress on a cluster with no ingress controller installed. What happens?",
+          "choices": [
+            "The object is stored and does nothing — no address is ever assigned",
+            "The API server rejects it",
+            "kube-proxy programs rules for it",
+            "It behaves as a NodePort Service"
+          ],
+          "answer": 0,
+          "explain": "Same pattern as CRDs: the object is inert without a controller. `kubectl get ingress` showing an empty ADDRESS column forever is the tell.",
+          "tag": "core idea"
+        },
+        {
+          "id": "netpol-default",
+          "type": "mcq",
+          "prompt": "Pod A is selected by a NetworkPolicy that allows ingress from pods labelled `role=frontend`. Pod B (`role=batch`) tries to connect. Pod C is selected by no policy at all. What is true?",
+          "choices": [
+            "B is blocked from A; C still accepts traffic from everyone",
+            "B is blocked, and C is blocked too — policies are namespace-wide",
+            "B is allowed because policies only apply to egress",
+            "C is blocked because a default-deny is implied cluster-wide"
+          ],
+          "answer": 0,
+          "explain": "Selection is what flips a pod into deny-by-default. Unselected pods are wide open. This is why 'we have NetworkPolicies' means little without a namespace-wide default-deny.",
+          "tag": "semantics"
+        },
+        {
+          "id": "netpol-dns",
+          "type": "mcq",
+          "prompt": "After applying a default-deny egress policy in `prod`, every app reports 'connection timeout' to *external* APIs and to other services. What did you forget?",
+          "choices": [
+            "To allow egress on port 53 to CoreDNS — nothing can resolve names any more",
+            "To allow ingress from the ingress controller",
+            "To label the namespace",
+            "To restart the CNI DaemonSet"
+          ],
+          "answer": 0,
+          "explain": "DNS is egress traffic too. Without a rule permitting UDP/TCP 53 to kube-dns, every lookup times out and every dependency looks broken at once. Ship the allow-dns policy alongside the default-deny, always.",
+          "tag": "outage"
+        },
+        {
+          "id": "netpol-both-sides",
+          "type": "mcq",
+          "prompt": "Namespace `a` has a default-deny egress policy. Namespace `b` allows ingress from namespace `a`. Can a pod in `a` reach a pod in `b`?",
+          "choices": [
+            "No — the egress policy in `a` must also allow it; both directions are evaluated independently",
+            "Yes — an ingress allow on the destination is sufficient",
+            "Yes, if both namespaces are in the same cluster CIDR",
+            "Only if a NetworkPolicy exists in kube-system permitting it"
+          ],
+          "answer": 0,
+          "explain": "Egress is evaluated at the source, ingress at the destination, and both must permit the flow. Debugging policy issues means checking both ends — a habit that saves a lot of time.",
+          "tag": "semantics"
+        }
+      ]
+    }
+  ]
+}

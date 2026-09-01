@@ -1,0 +1,242 @@
+{
+  "id": "node-runtime",
+  "title": "What runs on a node",
+  "summary": "kubelet, containerd/CRI, static pods, node registration and the eviction thresholds that kill your pods at 3am.",
+  "concepts": [
+    {
+      "id": "kubelet",
+      "title": "kubelet: the node agent",
+      "brief": "The kubelet is the only thing on a node that talks to the API server about pods. It **pulls** work rather than receiving pushes: it watches for pods whose `spec.nodeName` matches its own node name.\n\nIts responsibilities:\n\n- Turn a PodSpec into running containers via the **CRI** (containerd on RKE2)\n- Mount volumes via CSI, set up the pod sandbox via **CNI**\n- Run liveness/readiness/startup probes and restart containers per `restartPolicy`\n- Report node and pod status back to the API server\n- Send heartbeats (a `Lease` object every 10s) so the node controller knows it is alive\n- Evict pods when the node runs low on memory, disk or inodes\n\nCrucially, the kubelet keeps working when the API server is unreachable. It has the pod specs it already knows about and keeps restarting them.",
+      "examples": [
+        {
+          "label": "Node heartbeats are Leases, not status updates",
+          "lang": "bash",
+          "code": "$ kubectl -n kube-node-lease get lease\nNAME    HOLDER   AGE\nnode1   node1    80d\nnode2   node2    80d\n\n$ kubectl -n kube-node-lease get lease node1 -o jsonpath='{.spec.renewTime}'\n2026-05-02T09:41:12.000000Z",
+          "note": "Separating the fast heartbeat (a tiny Lease every 10s) from the heavy NodeStatus update (every 5 min) is what let clusters grow past a few hundred nodes without hammering etcd."
+        },
+        {
+          "label": "Static pods: files, not API objects",
+          "lang": "bash",
+          "code": "$ grep staticPodPath /var/lib/rancher/rke2/agent/etc/kubelet.conf\nstaticPodPath: /var/lib/rancher/rke2/agent/pod-manifests\n\n$ ls /var/lib/rancher/rke2/agent/pod-manifests/\netcd.yaml  kube-apiserver.yaml  kube-controller-manager.yaml  kube-scheduler.yaml",
+          "note": "The kubelet watches that directory and runs whatever it finds — even with no API server at all. That is the bootstrap trick: the control plane is started by the same kubelet it will later serve."
+        },
+        {
+          "label": "Mirror pods",
+          "lang": "bash",
+          "code": "$ kubectl -n kube-system get pod kube-apiserver-node1 -o jsonpath='{.metadata.ownerReferences[0].kind}'\nNode\n\n# deleting it via kubectl does nothing lasting - the kubelet recreates it from disk\n$ kubectl -n kube-system delete pod kube-apiserver-node1",
+          "note": "The API object is a read-only *mirror* of the on-disk pod. To change a static pod you edit the file on the node."
+        }
+      ],
+      "items": [
+        {
+          "id": "kubelet-pull",
+          "type": "mcq",
+          "prompt": "How does a kubelet learn it should run a particular pod?",
+          "choices": [
+            "It watches the API server for pods whose spec.nodeName equals its own node name",
+            "The scheduler opens a connection to the kubelet and sends the PodSpec",
+            "kube-proxy forwards pod definitions to the local kubelet",
+            "The controller-manager pushes assignments over the node's gRPC port"
+          ],
+          "answer": 0,
+          "explain": "Pull, not push. Nothing in the control plane initiates a connection to a node to assign work — which is why nodes can sit behind NAT and why a node that reconnects after an outage catches up on its own.",
+          "tag": "core idea"
+        },
+        {
+          "id": "static-pod-delete",
+          "type": "mcq",
+          "prompt": "You run `kubectl delete pod kube-apiserver-node1 -n kube-system`. What happens?",
+          "choices": [
+            "The mirror object disappears briefly and the kubelet recreates it — the container is restarted from the on-disk manifest",
+            "The API server is permanently removed from that node",
+            "The request is rejected because static pods are immutable",
+            "The scheduler places a replacement kube-apiserver on another node"
+          ],
+          "answer": 0,
+          "explain": "The API object is only a mirror. Source of truth is `/var/lib/rancher/rke2/agent/pod-manifests/kube-apiserver.yaml`. You will bounce the API server on that node (briefly) but you cannot delete it this way — remove or edit the file instead.",
+          "tag": "static pods"
+        },
+        {
+          "id": "kubelet-apiserver-down",
+          "type": "mcq",
+          "prompt": "The API server is unreachable from node2 for 20 minutes. A container on node2 crashes. What does the kubelet do?",
+          "choices": [
+            "Restarts it according to restartPolicy, using the pod spec it already has cached",
+            "Nothing — it cannot act without confirming the spec with the API server",
+            "Deletes the pod because it can no longer be validated",
+            "Forwards the crash to another node's kubelet"
+          ],
+          "answer": 0,
+          "explain": "The kubelet keeps a local view of its assigned pods and keeps enforcing it. Its status reports pile up unsent, the node goes NotReady from the control plane's point of view, but the workload on the node keeps being repaired locally.",
+          "tag": "failure mode"
+        },
+        {
+          "id": "lease-purpose",
+          "type": "mcq",
+          "prompt": "Why do node heartbeats use a small `Lease` object rather than updating `NodeStatus` every few seconds?",
+          "choices": [
+            "NodeStatus is large; writing it every 10s at scale would overwhelm etcd, so a tiny Lease carries the liveness signal instead",
+            "Leases are stored outside etcd",
+            "NodeStatus updates require leader election",
+            "Leases are encrypted and NodeStatus is not"
+          ],
+          "answer": 0,
+          "explain": "Every write hits etcd and every watcher. Splitting 'I am alive' (tiny, frequent) from 'here is everything about me' (large, every ~5 min) was a key scalability change. `kube-node-lease` is the namespace to check when nodes flap.",
+          "tag": "scalability"
+        }
+      ]
+    },
+    {
+      "id": "cri",
+      "title": "CRI and containerd",
+      "brief": "The kubelet does not know how to run a container. It speaks the **Container Runtime Interface** (gRPC) to a runtime — containerd on RKE2 — which in turn calls a low-level OCI runtime (`runc`) to actually create the process.\n\nThe chain: `kubelet → CRI → containerd → containerd-shim → runc → your process`.\n\nEvery pod starts with a **sandbox** (the `pause` container). It holds the network namespace so containers in the pod share an IP, and so the namespace survives individual containers restarting.\n\nWhen the API server is unavailable, `crictl` is your window into the node — it talks to containerd directly.",
+      "examples": [
+        {
+          "label": "crictl when kubectl is not an option",
+          "lang": "bash",
+          "code": "$ export CONTAINER_RUNTIME_ENDPOINT=unix:///run/k3s/containerd/containerd.sock\n$ crictl ps\nCONTAINER     IMAGE       STATE     NAME             ATTEMPT   POD ID\n8b1f2c0a9d3e  hardened..  Running   kube-apiserver   0         a1b2c3\n\n$ crictl logs 8b1f2c0a9d3e --tail 20\n$ crictl pods --name etcd\n$ crictl images",
+          "note": "On RKE2 the containerd socket lives under `/run/k3s/containerd/containerd.sock`. This is how you debug a control plane that will not come up."
+        },
+        {
+          "label": "The pause container",
+          "lang": "bash",
+          "code": "$ crictl pods\nPOD ID     NAME              STATE    NAMESPACE\na1b2c3d4   api-7c9d          Ready    default\n\n# one sandbox per pod; containers join its namespaces\n$ ctr -n k8s.io containers ls | grep pause",
+          "note": "Kill the pause container and the whole pod's network namespace goes with it — every container in the pod restarts."
+        },
+        {
+          "label": "Private registry config (RKE2)",
+          "lang": "yaml",
+          "code": "# /etc/rancher/rke2/registries.yaml\nmirrors:\n  docker.io:\n    endpoint:\n      - \"https://harbor.internal\"\nconfigs:\n  \"harbor.internal\":\n    auth:\n      username: robot$k8s\n      password: <token>\n    tls:\n      ca_file: /etc/ssl/certs/harbor-ca.crt",
+          "note": "This configures containerd, not Kubernetes — no imagePullSecrets involved. Requires an rke2-server/agent restart to take effect."
+        }
+      ],
+      "items": [
+        {
+          "id": "cri-chain",
+          "type": "order",
+          "prompt": "Order the layers involved in starting a container on an RKE2 node.",
+          "steps": [
+            "kubelet receives the pod spec and calls the CRI over a unix socket",
+            "containerd pulls the image and prepares the snapshot",
+            "containerd starts a shim process for the container",
+            "runc creates the namespaces, cgroups and the process itself"
+          ],
+          "explain": "Each layer has a narrow job. Knowing the chain tells you where to look: image pull errors are containerd; permission/cgroup errors are runc; 'context deadline exceeded' talking to the socket is the kubelet↔containerd hop.",
+          "tag": "runtime"
+        },
+        {
+          "id": "pause-container",
+          "type": "mcq",
+          "prompt": "What is the `pause` container for?",
+          "choices": [
+            "It owns the pod's network (and IPC) namespace so containers share one IP and the namespace survives container restarts",
+            "It pauses the pod during rolling updates",
+            "It holds the pod's persistent volume mounts",
+            "It is a leftover from Docker and is unused under containerd"
+          ],
+          "answer": 0,
+          "explain": "It does nothing but sleep and reap zombies. Its value is being the namespace anchor: your app container can crash and restart 50 times while the pod keeps the same IP.",
+          "tag": "sandbox"
+        },
+        {
+          "id": "crictl-socket",
+          "type": "fill",
+          "prompt": "The API server is down on an RKE2 node and you need container logs. Which CLI talks to containerd directly using the CRI?",
+          "accept": ["crictl", "crictl logs"],
+          "placeholder": "command",
+          "explain": "`crictl` speaks CRI to containerd, so it works with no control plane at all. Point it at `unix:///run/k3s/containerd/containerd.sock` on RKE2. `ctr` is a level lower still (containerd's own client, namespace `k8s.io`)."
+        },
+        {
+          "id": "registries-yaml",
+          "type": "mcq",
+          "prompt": "Images fail to pull from your internal Harbor with an x509 error on every node of an RKE2 cluster. Where do you fix it?",
+          "choices": [
+            "/etc/rancher/rke2/registries.yaml, then restart rke2-server/rke2-agent",
+            "An imagePullSecret in each namespace",
+            "The kubelet's --pod-infra-container-image flag",
+            "A ConfigMap named containerd-config in kube-system"
+          ],
+          "answer": 0,
+          "explain": "Image pulling is containerd's job, and RKE2 renders `registries.yaml` into containerd's config at startup. imagePullSecrets solve *authentication* per-namespace, not TLS trust or mirroring for the whole node.",
+          "tag": "rke2"
+        }
+      ]
+    },
+    {
+      "id": "node-pressure",
+      "title": "Node pressure and eviction",
+      "brief": "The kubelet defends the node. When a resource crosses a threshold it sets a condition (`MemoryPressure`, `DiskPressure`, `PIDPressure`) and starts evicting pods.\n\nTwo kinds of pressure behave very differently:\n\n- **Soft/hard eviction thresholds** (kubelet): graceful-ish, ranked by QoS class and how far over its request the pod is. `BestEffort` dies first, then `Burstable` over its request, `Guaranteed` last.\n- **Kernel OOM killer**: not Kubernetes at all. A container exceeding its memory **limit** is killed by cgroups with exit code 137 — no eviction event, no ranking, just death.\n\nDisk pressure also triggers image garbage collection, which is why a node under `DiskPressure` suddenly re-pulls images and gets slower.",
+      "examples": [
+        {
+          "label": "The two ways a pod dies for memory",
+          "lang": "bash",
+          "code": "# 1. cgroup OOM kill - container exceeded its own limit\n$ kubectl get pod worker-2 -o jsonpath='{.status.containerStatuses[0].lastState.terminated}'\n{\"exitCode\":137,\"reason\":\"OOMKilled\",\"startedAt\":...}\n\n# 2. kubelet eviction - the whole NODE ran low\n$ kubectl get events --field-selector reason=Evicted\nLAST SEEN   TYPE      REASON    OBJECT          MESSAGE\n2m          Warning   Evicted   pod/cache-abc   The node was low on resource: memory.",
+          "note": "Exit code 137 + OOMKilled = your limit was too low. `reason=Evicted` = the node was oversubscribed. Completely different fixes."
+        },
+        {
+          "label": "QoS class decides eviction order",
+          "lang": "yaml",
+          "code": "# Guaranteed: requests == limits for every container\nresources:\n  requests: { cpu: \"500m\", memory: \"1Gi\" }\n  limits:   { cpu: \"500m\", memory: \"1Gi\" }\n\n# Burstable: requests < limits (or only requests set)\nresources:\n  requests: { cpu: \"100m\", memory: \"256Mi\" }\n  limits:   { memory: \"1Gi\" }\n\n# BestEffort: nothing set - first to be evicted",
+          "note": "`kubectl get pod X -o jsonpath='{.status.qosClass}'` tells you where a pod sits in the queue."
+        },
+        {
+          "label": "Default kubelet thresholds",
+          "lang": "yaml",
+          "code": "evictionHard:\n  memory.available: \"100Mi\"\n  nodefs.available: \"10%\"\n  nodefs.inodesFree: \"5%\"\n  imagefs.available: \"15%\"",
+          "note": "Reserve capacity with `systemReserved`/`kubeReserved` so the OS and kubelet never compete with pods for the last MB."
+        }
+      ],
+      "items": [
+        {
+          "id": "oom-vs-evict",
+          "type": "mcq",
+          "prompt": "A container shows `OOMKilled` with exit code 137, but the node has 40GB free memory. What happened?",
+          "choices": [
+            "The container exceeded its own memory limit and was killed by the kernel cgroup, regardless of node capacity",
+            "The kubelet evicted it due to node MemoryPressure",
+            "The scheduler moved it to free capacity",
+            "etcd ran out of memory and cascaded"
+          ],
+          "answer": 0,
+          "explain": "A memory **limit** is a cgroup ceiling enforced by the kernel. It has nothing to do with how much the node has spare. Fix: raise the limit or fix the leak — adding nodes will not help.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "qos-order",
+          "type": "order",
+          "prompt": "A node hits MemoryPressure. Order these pods from *first evicted* to *last*.",
+          "steps": [
+            "BestEffort pod with no requests or limits",
+            "Burstable pod using far more memory than its request",
+            "Burstable pod sitting under its request",
+            "Guaranteed pod with requests equal to limits"
+          ],
+          "explain": "The kubelet ranks by QoS class, then by how far usage exceeds the request. Setting honest requests is not paperwork — it is what buys your pod survival when a node gets tight.",
+          "tag": "qos"
+        },
+        {
+          "id": "qos-class",
+          "type": "fill",
+          "prompt": "Every container in a pod sets memory and CPU requests exactly equal to its limits. What QoS class is the pod?",
+          "accept": ["guaranteed"],
+          "placeholder": "QoS class",
+          "explain": "Guaranteed — the strongest class. It is evicted last and gets exclusive CPUs if the CPU manager static policy is enabled. Any container missing a limit, or with request < limit, drops the whole pod to Burstable."
+        },
+        {
+          "id": "disk-pressure",
+          "type": "multi",
+          "prompt": "A node reports `DiskPressure`. What follows?",
+          "choices": [
+            "The kubelet garbage-collects unused images",
+            "New pods stop being scheduled to that node",
+            "Pods may be evicted to reclaim ephemeral storage",
+            "etcd automatically compacts its database"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "DiskPressure adds a `node.kubernetes.io/disk-pressure:NoSchedule` taint, triggers image GC, and can evict pods over their ephemeral-storage usage. etcd compaction is unrelated — that is an API-server-side job on control-plane nodes.",
+          "tag": "pressure"
+        }
+      ]
+    }
+  ]
+}

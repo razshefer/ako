@@ -1,0 +1,339 @@
+{
+  "id": "request-path",
+  "title": "The path of an API request",
+  "summary": "Authentication, authorisation, admission webhooks and how a write actually lands in etcd.",
+  "concepts": [
+    {
+      "id": "lifecycle",
+      "title": "From kubectl to etcd",
+      "brief": "Every request — yours, a controller's, Rancher's — walks the same pipeline:\n\n- **Authentication**: who are you? Client cert, bearer token, ServiceAccount JWT, or an OIDC/webhook provider. Failure = `401`.\n- **Authorisation**: are you allowed? RBAC (and the Node authorizer for kubelets). Failure = `403`.\n- **Mutating admission**: plugins and webhooks may *change* the object (inject sidecars, add defaults).\n- **Schema validation**: does the object match the OpenAPI schema / CRD schema?\n- **Validating admission**: plugins, webhooks and ValidatingAdmissionPolicy may *reject* it.\n- **Persist**: written to etcd, revision assigned, watchers notified.\n\nThe order matters for debugging. A `401` never reached RBAC. A `403` means you authenticated fine and RBAC said no. A message from a webhook means you got all the way to admission.",
+      "examples": [
+        {
+          "label": "Reading the error tells you the stage",
+          "lang": "bash",
+          "code": "# 401 - authentication\nerror: You must be logged in to the server (Unauthorized)\n\n# 403 - authorisation (RBAC)\nError from server (Forbidden): pods is forbidden:\n  User \"raz\" cannot list resource \"pods\" in API group \"\" in the namespace \"prod\"\n\n# admission webhook rejection\nError from server: admission webhook \"validation.gatekeeper.sh\" denied the request:\n  container <api> has no memory limit"
+        },
+        {
+          "label": "Who am I, and can I do this?",
+          "lang": "bash",
+          "code": "$ kubectl auth whoami\nATTRIBUTE   VALUE\nUsername    system:serviceaccount:prod:deployer\nGroups      [system:serviceaccounts system:authenticated]\n\n$ kubectl auth can-i delete deployments -n prod\nno\n\n$ kubectl auth can-i --list -n prod | head -5",
+          "note": "`auth can-i` asks the API server to run the real authorisation check. It is the fastest way to settle an RBAC argument."
+        },
+        {
+          "label": "See the whole pipeline with verbose output",
+          "lang": "bash",
+          "code": "$ kubectl get pods -v=8 2>&1 | grep -E 'Request Headers|GET https|Response Status'\nGET https://10.0.0.10:6443/api/v1/namespaces/default/pods?limit=500\nRequest Headers: Authorization: Bearer <masked>\nResponse Status: 200 OK in 14 milliseconds"
+        }
+      ],
+      "items": [
+        {
+          "id": "pipeline-order",
+          "type": "order",
+          "prompt": "Order the stages a `kubectl apply` passes through in the API server.",
+          "steps": [
+            "Authentication — establish the identity of the caller",
+            "Authorisation — RBAC decides if that identity may perform this verb",
+            "Mutating admission — webhooks and plugins may modify the object",
+            "Schema validation against the OpenAPI/CRD schema",
+            "Validating admission — webhooks and policies may reject it",
+            "Write to etcd and notify watchers"
+          ],
+          "explain": "Mutating always runs before validating, so a sidecar injected by a mutating webhook is still subject to the policy checks that follow. If they ran the other way round, injection could bypass policy.",
+          "tag": "core idea"
+        },
+        {
+          "id": "401-vs-403",
+          "type": "mcq",
+          "prompt": "A CI pipeline gets `Error from server (Forbidden): deployments.apps is forbidden`. What is ruled out?",
+          "choices": [
+            "Its credentials are fine — authentication succeeded, so this is an RBAC problem",
+            "Its token expired",
+            "The API server is unreachable",
+            "The namespace does not exist"
+          ],
+          "answer": 0,
+          "explain": "403 comes after successful authentication. An expired or invalid token gives 401 (`Unauthorized`). So stop regenerating the token and go look at the RoleBinding — `kubectl auth can-i --as=system:serviceaccount:ci:deployer` reproduces it exactly.",
+          "tag": "debugging"
+        },
+        {
+          "id": "impersonate",
+          "type": "fill",
+          "prompt": "Which `kubectl` flag lets a cluster-admin test another identity's permissions without their credentials?",
+          "accept": ["--as", "as", "--as=", "kubectl --as"],
+          "placeholder": "flag",
+          "explain": "`kubectl auth can-i list pods -n prod --as=system:serviceaccount:prod:deployer`. Impersonation is itself an RBAC-controlled verb (`impersonate`), so it is auditable."
+        },
+        {
+          "id": "webhook-message",
+          "type": "mcq",
+          "prompt": "The error is `admission webhook \"vpolicy.kyverno.svc\" denied the request`. What does that prove about the request?",
+          "choices": [
+            "It authenticated, passed RBAC, and reached validating admission before being rejected by policy",
+            "The user lacks RBAC permission for the resource",
+            "The object failed OpenAPI schema validation",
+            "etcd rejected the write"
+          ],
+          "answer": 0,
+          "explain": "Getting a named webhook rejection means you traversed everything before it. The fix is a policy exception or a corrected manifest — not RBAC, not credentials.",
+          "tag": "debugging"
+        }
+      ]
+    },
+    {
+      "id": "rbac",
+      "title": "RBAC in practice",
+      "brief": "Four object types, one rule: **permissions are additive and there are no deny rules**.\n\n- **Role** — verbs on resources, scoped to one namespace\n- **ClusterRole** — the same, cluster-wide (or for cluster-scoped resources like nodes and PVs)\n- **RoleBinding** — grants a Role *or a ClusterRole* to subjects, within one namespace\n- **ClusterRoleBinding** — grants a ClusterRole cluster-wide\n\nThe combination people forget: a **RoleBinding referencing a ClusterRole** grants that ClusterRole's permissions *only inside the binding's namespace*. That is how you reuse the built-in `view`/`edit`/`admin` roles per namespace instead of writing them out again.\n\nSubjects are Users, Groups and ServiceAccounts. Kubernetes has no user database — Users and Groups come from certificates or your OIDC provider, so `raz` only exists as a string in a certificate CN or a token claim.",
+      "examples": [
+        {
+          "label": "Namespace-scoped reuse of a ClusterRole",
+          "lang": "yaml",
+          "code": "apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: team-a-edit\n  namespace: team-a\nsubjects:\n- kind: Group\n  name: \"oidc:team-a\"          # comes from your IdP\n  apiGroup: rbac.authorization.k8s.io\nroleRef:\n  kind: ClusterRole             # cluster role...\n  name: edit                    # ...bound only inside team-a\n  apiGroup: rbac.authorization.k8s.io",
+          "note": "The single most useful RBAC pattern: one ClusterRole, many namespaced RoleBindings."
+        },
+        {
+          "label": "Escalation you can grant by accident",
+          "lang": "yaml",
+          "code": "rules:\n- apiGroups: [\"\"]\n  resources: [\"secrets\"]\n  verbs: [\"get\", \"list\"]\n# equivalent to handing over every credential in the namespace\n\n- apiGroups: [\"\"]\n  resources: [\"pods/exec\", \"pods/portforward\"]\n  verbs: [\"create\"]\n# shell inside any pod - including one running as a privileged service account",
+          "note": "`create` on `pods` in a namespace is close to namespace-admin: you can mount any secret and run as any ServiceAccount in it."
+        },
+        {
+          "label": "Who can do this?",
+          "lang": "bash",
+          "code": "$ kubectl auth can-i list secrets --as=system:serviceaccount:app:default -n app\nno\n\n$ kubectl get clusterrolebinding -o custom-columns=\\\nNAME:.metadata.name,ROLE:.roleRef.name,SUBJECTS:.subjects[*].name | grep cluster-admin"
+        }
+      ],
+      "items": [
+        {
+          "id": "rolebinding-clusterrole",
+          "type": "mcq",
+          "prompt": "A RoleBinding in namespace `team-a` references the ClusterRole `edit`. What does the subject get?",
+          "choices": [
+            "The `edit` permissions, but only within namespace team-a",
+            "The `edit` permissions across the whole cluster",
+            "Nothing — a RoleBinding cannot reference a ClusterRole",
+            "Read-only access to team-a"
+          ],
+          "answer": 0,
+          "explain": "The *binding* type decides the scope, not the role type. This is the intended way to reuse built-in ClusterRoles per namespace. The reverse is impossible: a ClusterRoleBinding cannot be narrowed to a namespace.",
+          "tag": "scope"
+        },
+        {
+          "id": "no-deny",
+          "type": "mcq",
+          "prompt": "A user has `view` in namespace `prod` via one binding and `admin` via another. You want to stop them deleting Deployments in prod. What works?",
+          "choices": [
+            "Remove or narrow the binding that grants admin — RBAC has no deny rules, permissions only add up",
+            "Add a Role with `deny` on the delete verb",
+            "Add a RoleBinding with an empty verbs list to override",
+            "Set the admin binding's priority lower than view"
+          ],
+          "answer": 0,
+          "explain": "RBAC is purely additive: the union of every matching rule. There is no deny and no ordering. If you need real deny semantics (e.g. 'no privileged pods anywhere'), that is an admission policy job — Kyverno, Gatekeeper or ValidatingAdmissionPolicy.",
+          "tag": "core idea"
+        },
+        {
+          "id": "rbac-match",
+          "type": "match",
+          "prompt": "Match each object to its scope.",
+          "pairs": [
+            ["Role", "Verbs on resources inside one namespace"],
+            ["ClusterRole", "Verbs cluster-wide, or on cluster-scoped resources"],
+            ["RoleBinding", "Grants a Role or ClusterRole within one namespace"],
+            ["ClusterRoleBinding", "Grants a ClusterRole across the whole cluster"]
+          ],
+          "explain": "Nodes, PersistentVolumes, StorageClasses and CRDs are cluster-scoped, so access to them can only come from a ClusterRole + ClusterRoleBinding."
+        },
+        {
+          "id": "sa-identity",
+          "type": "mcq",
+          "prompt": "What is the username a pod presents when it calls the API with its mounted ServiceAccount token?",
+          "choices": [
+            "system:serviceaccount:<namespace>:<name>",
+            "The pod name",
+            "system:node:<nodename>",
+            "The name of the Deployment that owns it"
+          ],
+          "answer": 0,
+          "explain": "And it is in the group `system:serviceaccounts:<namespace>`, which lets you bind permissions to every SA in a namespace at once. Modern tokens are short-lived projected volumes bound to the pod's lifetime, not the old never-expiring Secret.",
+          "tag": "identity"
+        },
+        {
+          "id": "secrets-power",
+          "type": "multi",
+          "prompt": "Which grants are effectively namespace-admin even though they look narrow?",
+          "choices": [
+            "`get`/`list` on secrets in the namespace",
+            "`create` on pods in the namespace",
+            "`create` on pods/exec",
+            "`get` on configmaps"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "Reading secrets hands over credentials. Creating pods lets you mount any secret and assume any ServiceAccount in that namespace. `pods/exec` gives a shell in an existing pod with its identity. ConfigMaps are usually non-sensitive — usually.",
+          "tag": "security"
+        }
+      ]
+    },
+    {
+      "id": "admission",
+      "title": "Admission control",
+      "brief": "Admission plugins run **inside** the API server; admission **webhooks** are your own HTTPS services it calls out to.\n\nA webhook is registered by a `MutatingWebhookConfiguration` or `ValidatingWebhookConfiguration` that says: for these resources and verbs, POST an `AdmissionReview` to this Service and use the response.\n\nThe operationally dangerous field is `failurePolicy`:\n\n- `Fail` (default) — if your webhook is unreachable, the matching API requests are **rejected**\n- `Ignore` — requests proceed if the webhook is down\n\nA `Fail` webhook that matches broadly, and whose own pods cannot start, is a classic self-inflicted cluster outage: nothing can be created, including the webhook's own pods. Always scope `namespaceSelector`/`objectSelector` and exclude `kube-system`.",
+      "examples": [
+        {
+          "label": "A webhook registration, annotated",
+          "lang": "yaml",
+          "code": "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingWebhookConfiguration\nmetadata:\n  name: pod-policy\nwebhooks:\n- name: policy.example.com\n  rules:\n  - apiGroups: [\"\"]\n    apiVersions: [\"v1\"]\n    operations: [\"CREATE\", \"UPDATE\"]\n    resources: [\"pods\"]\n  failurePolicy: Fail            # deadlock risk if it matches everything\n  namespaceSelector:\n    matchExpressions:\n    - key: kubernetes.io/metadata.name\n      operator: NotIn\n      values: [kube-system, cattle-system]\n  timeoutSeconds: 5\n  clientConfig:\n    service: { name: policy-svc, namespace: policy, path: /validate }\n    caBundle: LS0tLS1CRUdJTi..."
+        },
+        {
+          "label": "The outage it causes",
+          "lang": "log",
+          "code": "Error creating: Internal error occurred: failed calling webhook \"policy.example.com\":\n  failed to call webhook: Post \"https://policy-svc.policy.svc:443/validate?timeout=5s\":\n  dial tcp 10.43.12.7:443: connect: connection refused",
+          "note": "Every pod creation in the cluster now fails - including the policy webhook's own replacement pods. Recovery: delete the ValidatingWebhookConfiguration, let things start, then re-apply it."
+        },
+        {
+          "label": "Built-in plugins you rely on daily",
+          "lang": "text",
+          "code": "NamespaceLifecycle     - blocks creates in a Terminating namespace\nLimitRanger            - applies LimitRange defaults\nServiceAccount         - injects the SA token volume\nDefaultStorageClass    - fills in a PVC's storageClassName\nResourceQuota          - enforces quota at admission time\nPodSecurity            - enforces Pod Security Standards by namespace label"
+        }
+      ],
+      "items": [
+        {
+          "id": "failure-policy",
+          "type": "mcq",
+          "prompt": "A ValidatingWebhookConfiguration with `failurePolicy: Fail` matches all pod CREATEs. Its backing Deployment is scaled to zero. What is the state of the cluster?",
+          "choices": [
+            "No new pods can be created anywhere, including the webhook's own — you must delete the webhook configuration to recover",
+            "Pod creation continues; the webhook is skipped when unavailable",
+            "Only pods in the webhook's namespace are blocked",
+            "The API server disables the webhook automatically after 3 failures"
+          ],
+          "answer": 0,
+          "explain": "`Fail` means unreachable = denied, and there is no auto-disable. This is the textbook admission-webhook deadlock. Prevention: `namespaceSelector` excluding system namespaces, a tight `timeoutSeconds`, and at least two replicas with a PDB.",
+          "tag": "outage"
+        },
+        {
+          "id": "mutate-before-validate",
+          "type": "mcq",
+          "prompt": "A service mesh injects a sidecar via a mutating webhook. A policy engine requires every container to have memory limits. Which runs first and why does it matter?",
+          "choices": [
+            "Mutating runs first, so the injected sidecar is also checked by the validating policy",
+            "Validating runs first, so the sidecar escapes the policy",
+            "They run in parallel and the API server merges results",
+            "Order is random and configured per cluster"
+          ],
+          "answer": 0,
+          "explain": "Mutating always precedes validating. That is precisely so injected containers cannot slip past policy — and it is also why your mesh sidecar needs limits set in the injector template, or every pod gets rejected.",
+          "tag": "ordering"
+        },
+        {
+          "id": "admission-plugins",
+          "type": "multi",
+          "prompt": "Which of these are handled by built-in admission plugins rather than by controllers after the fact?",
+          "choices": [
+            "Rejecting a pod that would exceed a ResourceQuota",
+            "Filling in a PVC's storageClassName from the default StorageClass",
+            "Applying LimitRange defaults to a container with no requests",
+            "Creating a ReplicaSet for a new Deployment"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "Quota, default StorageClass and LimitRange defaults are all applied at admission — before the object is stored. Creating a ReplicaSet is the deployment *controller* reacting afterwards. This distinction explains why a quota violation gives you an instant error while a bad Deployment gives you a healthy object with sad status.",
+          "tag": "plugins"
+        },
+        {
+          "id": "webhook-recovery",
+          "type": "fill",
+          "prompt": "Cluster-wide pod creation is blocked by a broken `Fail` webhook. Which object type do you delete to break the deadlock?",
+          "accept": [
+            "validatingwebhookconfiguration",
+            "validatingwebhookconfigurations",
+            "ValidatingWebhookConfiguration",
+            "validatingwebhookconfiguration.admissionregistration.k8s.io"
+          ],
+          "placeholder": "kind",
+          "explain": "Deleting the ValidatingWebhookConfiguration (or MutatingWebhookConfiguration) unregisters the callout immediately — the API server stops calling it. Save a copy first, bring the webhook's pods back, then re-apply."
+        }
+      ]
+    },
+    {
+      "id": "resource-version",
+      "title": "resourceVersion, watches and informers",
+      "brief": "Every object carries a `metadata.resourceVersion` — really etcd's global revision at the time it was written. Two mechanisms hang off it.\n\n**Optimistic concurrency.** An update sends the resourceVersion it read. If someone else wrote in between, the API server returns `409 Conflict`. This is why controllers retry on conflict instead of locking. It is also why `kubectl apply` on an object being actively modified sometimes needs a second go.\n\n**Watches and informers.** A client LISTs (getting a resourceVersion) and then WATCHes from that revision, receiving only deltas. An **informer** wraps this in a local cache plus a work queue: controllers read from the cache instead of hammering the API server, and process changes one at a time.\n\nWhen a watch falls too far behind, etcd may have compacted the old revision — the client gets `410 Gone` and must relist. Perfectly normal; a storm of relists is not.",
+      "examples": [
+        {
+          "label": "Optimistic concurrency in the raw",
+          "lang": "bash",
+          "code": "$ kubectl get deploy api -o jsonpath='{.metadata.resourceVersion}'\n84102391\n\n# someone else updates it...\n$ kubectl replace -f old-api.yaml\nError from server (Conflict): Operation cannot be fulfilled on deployments.apps \"api\":\n  the object has been modified; please apply your changes to the latest version and try again",
+          "note": "`kubectl apply` mostly avoids this by patching. `kubectl replace` sends the whole object with the version you read."
+        },
+        {
+          "label": "Why controllers use informers",
+          "lang": "text",
+          "code": "without informer:  every controller polls the API server -> N controllers x M objects of load\nwith informer:     one watch per resource type per controller\n                   -> local cache (Store) kept up to date by deltas\n                   -> handlers push keys into a rate-limited work queue\n                   -> worker pops key, reads from CACHE, reconciles, requeues on error",
+          "note": "Reconciling from cache is why controllers are level-triggered: the worker looks at the *current* object, not the event that woke it."
+        },
+        {
+          "label": "410 Gone is normal",
+          "lang": "log",
+          "code": "W  reflector.go:462] k8s.io/client-go/informers: watch of *v1.Pod ended with:\n   too old resource version: 84009122 (84102391)\nI  reflector.go:281] Listing and watching *v1.Pod from k8s.io/client-go/informers",
+          "note": "The client relists and carries on. Constant relisting usually means etcd compaction is aggressive or the client is too slow to keep up."
+        }
+      ],
+      "items": [
+        {
+          "id": "conflict-409",
+          "type": "mcq",
+          "prompt": "Your operator gets `409 Conflict` when updating a CR it just read. What is the correct behaviour?",
+          "choices": [
+            "Re-read the object and retry the update against the new resourceVersion",
+            "Force the write with --overwrite to win the race",
+            "Take a distributed lock before every update",
+            "Delete and recreate the object"
+          ],
+          "answer": 0,
+          "explain": "409 is the system working. Kubernetes has no locks; it uses optimistic concurrency and expects clients to retry. `RetryOnConflict` in client-go exists exactly for this loop.",
+          "tag": "concurrency"
+        },
+        {
+          "id": "informer-cache",
+          "type": "mcq",
+          "prompt": "Why does a controller reconcile from its informer cache instead of the event payload that woke it?",
+          "choices": [
+            "So it always acts on current state — missed or coalesced events cannot cause permanent drift",
+            "Because events do not contain the object",
+            "To avoid RBAC checks on each read",
+            "Because the cache is stored in etcd"
+          ],
+          "answer": 0,
+          "explain": "Level-triggered, not edge-triggered. Events are only a hint that *something* changed; the controller then looks at reality. This is why a controller can be restarted, miss a week of events, and still converge on its first resync.",
+          "tag": "core idea"
+        },
+        {
+          "id": "watch-flow",
+          "type": "order",
+          "prompt": "Order what an informer does on startup.",
+          "steps": [
+            "LIST all objects of the type, noting the returned resourceVersion",
+            "Populate the local cache with the full result",
+            "Open a WATCH starting from that resourceVersion",
+            "Apply add/update/delete deltas to the cache and queue keys for workers"
+          ],
+          "explain": "List-then-watch is the fundamental pattern of every Kubernetes client. The resourceVersion stitches the two together with no gap and no duplicates.",
+          "tag": "informers"
+        },
+        {
+          "id": "resourceversion-meaning",
+          "type": "mcq",
+          "prompt": "What is `metadata.resourceVersion` actually?",
+          "choices": [
+            "An opaque token backed by etcd's global revision — comparable only for equality, not arithmetic",
+            "A monotonically increasing per-object counter starting at 1",
+            "A hash of the object's spec",
+            "The number of times the object has been updated"
+          ],
+          "answer": 0,
+          "explain": "It is global to the cluster, not per-object, so two objects' resourceVersions are not meaningfully comparable and you must never do maths on them. Treat it as an opaque cursor.",
+          "tag": "gotcha"
+        }
+      ]
+    }
+  ]
+}

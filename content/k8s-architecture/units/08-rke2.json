@@ -1,0 +1,326 @@
+{
+  "id": "rke2",
+  "title": "RKE2 architecture",
+  "summary": "How RKE2 assembles a cluster: systemd units, static pods, bundled containerd, config.yaml, joining, snapshots and certs.",
+  "concepts": [
+    {
+      "id": "rke2-layout",
+      "title": "What RKE2 actually installs",
+      "brief": "RKE2 is a single Go binary plus a systemd unit. Everything else is derived from it.\n\n- `rke2-server.service` on control-plane nodes, `rke2-agent.service` on workers\n- It runs its **own bundled containerd** (socket at `/run/k3s/containerd/containerd.sock`) — not the host's Docker or containerd\n- It runs a **supervisor kubelet** which starts the control plane as **static pods** from `/var/lib/rancher/rke2/agent/pod-manifests/`\n- Binaries and CNI plugins are unpacked to `/var/lib/rancher/rke2/bin` and `/opt/cni/bin`\n- The admin kubeconfig lands at `/etc/rancher/rke2/rke2.yaml`\n- Add-ons (CoreDNS, ingress-nginx, Canal, metrics-server) are installed as **HelmChart CRs** reconciled by the built-in helm-controller\n\nSo there is no `kubectl` needed to bootstrap and no chicken-and-egg: the kubelet reads files from disk, the control plane comes up, and only then does anything talk to an API.\n\nRKE2 is the CIS-hardened, FIPS-capable sibling of K3s: same packaging ideas, but with upstream components and a real etcd instead of SQLite.",
+      "examples": [
+        {
+          "label": "The map of the filesystem",
+          "lang": "bash",
+          "code": "/etc/rancher/rke2/config.yaml           # your configuration\n/etc/rancher/rke2/rke2.yaml             # admin kubeconfig (server nodes)\n/etc/rancher/rke2/registries.yaml       # containerd registry mirrors/auth\n\n/var/lib/rancher/rke2/agent/pod-manifests/   # static pods: apiserver, etcd, scheduler, kcm\n/var/lib/rancher/rke2/agent/etc/             # kubelet + containerd rendered config\n/var/lib/rancher/rke2/server/manifests/      # drop YAML here => auto-applied\n/var/lib/rancher/rke2/server/tls/            # every certificate and CA\n/var/lib/rancher/rke2/server/db/             # embedded etcd data + snapshots\n/var/lib/rancher/rke2/bin/                   # kubectl, crictl, ctr, containerd, runc"
+        },
+        {
+          "label": "Getting a working kubectl on a server node",
+          "lang": "bash",
+          "code": "$ export PATH=$PATH:/var/lib/rancher/rke2/bin\n$ export KUBECONFIG=/etc/rancher/rke2/rke2.yaml\n$ kubectl get nodes\n\n# and for the runtime, when the API is down:\n$ export CONTAINER_RUNTIME_ENDPOINT=unix:///run/k3s/containerd/containerd.sock\n$ crictl ps",
+          "note": "Worth putting in root's .bashrc on every server node — it is the first thing you need in an incident."
+        },
+        {
+          "label": "The nuclear options",
+          "lang": "bash",
+          "code": "# stop everything and kill all containers, keep data\n$ /usr/local/bin/rke2-killall.sh\n\n# remove RKE2 from the node entirely (destroys /var/lib/rancher/rke2)\n$ /usr/local/bin/rke2-uninstall.sh",
+          "note": "`systemctl stop rke2-server` leaves containers running — the supervisor is gone but containerd is not. killall is what actually stops the workload."
+        }
+      ],
+      "items": [
+        {
+          "id": "rke2-static-pods",
+          "type": "mcq",
+          "prompt": "How does RKE2 run the Kubernetes control plane?",
+          "choices": [
+            "As static pods started by its supervisor kubelet from /var/lib/rancher/rke2/agent/pod-manifests/",
+            "As Deployments in kube-system, scheduled normally",
+            "As separate systemd units, one per component",
+            "As processes inside the rke2-server binary"
+          ],
+          "answer": 0,
+          "explain": "This is the key difference from RKE1 (Docker containers) and from kubeadm-style clusters you manage yourself. To change an apiserver flag you edit RKE2's config and let it re-render the manifest — editing the manifest by hand gets overwritten on restart.",
+          "tag": "rke2"
+        },
+        {
+          "id": "rke2-containerd",
+          "type": "mcq",
+          "prompt": "Which container runtime socket do you point `crictl` at on an RKE2 node?",
+          "choices": [
+            "unix:///run/k3s/containerd/containerd.sock",
+            "unix:///var/run/docker.sock",
+            "unix:///run/containerd/containerd.sock",
+            "unix:///var/lib/rancher/rke2/cri.sock"
+          ],
+          "answer": 0,
+          "explain": "RKE2 ships and runs its own containerd under the k3s path (shared heritage). A host containerd at `/run/containerd/containerd.sock` is a *different* runtime with different containers — a classic confusion when debugging.",
+          "tag": "rke2"
+        },
+        {
+          "id": "rke2-stop",
+          "type": "mcq",
+          "prompt": "You run `systemctl stop rke2-server` on a node. What is still running?",
+          "choices": [
+            "containerd and every container, including the control-plane static pods",
+            "Nothing — the unit stops all child processes",
+            "Only the kubelet",
+            "Only the CNI plugins"
+          ],
+          "answer": 0,
+          "explain": "The supervisor stops, but containerd and the workload keep going. `rke2-killall.sh` is what tears down containers, network interfaces and mounts. Not knowing this leads to 'I stopped the node but pods are still serving traffic'.",
+          "tag": "operations"
+        },
+        {
+          "id": "rke2-paths",
+          "type": "match",
+          "prompt": "Match the RKE2 path to what lives there.",
+          "pairs": [
+            ["/etc/rancher/rke2/config.yaml", "Your node configuration"],
+            ["/var/lib/rancher/rke2/server/manifests/", "YAML auto-applied at startup"],
+            ["/var/lib/rancher/rke2/server/db/snapshots/", "etcd snapshots"],
+            ["/var/lib/rancher/rke2/agent/pod-manifests/", "Control-plane static pods"]
+          ],
+          "explain": "Four directories cover most RKE2 operational work. The manifests directory in particular is how RKE2 installs its own add-ons — and how you can ship your own bootstrap resources."
+        }
+      ]
+    },
+    {
+      "id": "rke2-config",
+      "title": "config.yaml and add-on control",
+      "brief": "`/etc/rancher/rke2/config.yaml` is the single source of node configuration. Every CLI flag has a YAML key; RKE2 renders it into kubelet config, static pod manifests and containerd config at startup.\n\nKeys that come up constantly:\n\n- `tls-san` — extra names/IPs in the API server certificate. **Set this before you build the cluster**; adding a load balancer name later means rotating certs.\n- `disable` — turn off bundled add-ons (`rke2-ingress-nginx`, `rke2-metrics-server`, `rke2-servicelb`)\n- `cni` — canal (default), calico, cilium, multus. Cannot be changed after bootstrap.\n- `node-label` / `node-taint` — applied at registration; changing them later needs `kubectl`, not the config file\n- `profile: cis` — enables the CIS hardening profile (with kernel sysctls and an etcd user prerequisite)\n- `kube-apiserver-arg`, `kubelet-arg`, `kube-controller-manager-arg` — raw flag passthrough\n\nCustomising an add-on is done with a **HelmChartConfig** in `/var/lib/rancher/rke2/server/manifests/`, not by editing the rendered chart — RKE2 overwrites its own manifests on every restart.",
+      "examples": [
+        {
+          "label": "A realistic server config",
+          "lang": "yaml",
+          "code": "# /etc/rancher/rke2/config.yaml\ntoken: <shared-secret>\ntls-san:\n  - k8s-prod.internal\n  - 10.0.0.100\nnode-label:\n  - \"topology.kubernetes.io/zone=eu-west-1a\"\ndisable:\n  - rke2-ingress-nginx      # we run our own\ncni: canal\nprofile: cis\nkube-apiserver-arg:\n  - \"audit-log-path=/var/log/kubernetes/audit.log\"\n  - \"audit-log-maxage=30\"\netcd-snapshot-schedule-cron: \"0 */6 * * *\"\netcd-snapshot-retention: 20"
+        },
+        {
+          "label": "Customising a bundled add-on the supported way",
+          "lang": "yaml",
+          "code": "# /var/lib/rancher/rke2/server/manifests/rke2-ingress-nginx-config.yaml\napiVersion: helm.cattle.io/v1\nkind: HelmChartConfig\nmetadata:\n  name: rke2-ingress-nginx\n  namespace: kube-system\nspec:\n  valuesContent: |-\n    controller:\n      config:\n        use-forwarded-headers: \"true\"\n      service:\n        enabled: true",
+          "note": "The helm-controller merges this into the chart's values. Editing the HelmChart object directly works until the next restart, when RKE2 rewrites it."
+        },
+        {
+          "label": "Where to look when a node will not start",
+          "lang": "bash",
+          "code": "$ journalctl -u rke2-server -f --no-pager\n$ journalctl -u rke2-agent -n 200 --no-pager | grep -i error\n\n# static pod logs when the API is not up yet\n$ ls /var/log/pods/\n$ crictl logs $(crictl ps -a --name kube-apiserver -q | head -1)"
+        }
+      ],
+      "items": [
+        {
+          "id": "tls-san",
+          "type": "mcq",
+          "prompt": "You put a load balancer in front of three RKE2 servers and point kubectl at its DNS name. TLS fails with a certificate name mismatch. What was missing?",
+          "choices": [
+            "`tls-san` entries for the load balancer name/IP in config.yaml, before the certs were generated",
+            "A NetworkPolicy allowing 6443",
+            "The kubeconfig's cluster CA data",
+            "An Ingress for the API server"
+          ],
+          "answer": 0,
+          "explain": "The API server certificate only contains the SANs it was issued with. Add the name to `tls-san`, then rotate: `systemctl stop rke2-server`, `rm -f /var/lib/rancher/rke2/server/tls/serving-kube-apiserver.*`, start again. Much easier to get right on day one.",
+          "tag": "rke2"
+        },
+        {
+          "id": "helmchartconfig",
+          "type": "mcq",
+          "prompt": "You edit the `rke2-coredns` HelmChart object with kubectl. After the next node reboot your change is gone. Why, and what is the right way?",
+          "choices": [
+            "RKE2 re-renders its bundled manifests on startup — use a HelmChartConfig in /var/lib/rancher/rke2/server/manifests/",
+            "The helm-controller reverts manual edits every 5 minutes; use a ConfigMap instead",
+            "CoreDNS is immutable; you must disable and redeploy it",
+            "You must edit the chart values in the RKE2 binary"
+          ],
+          "answer": 0,
+          "explain": "Anything RKE2 owns in `server/manifests/` is regenerated. A HelmChartConfig with the same name and namespace layers your values on top and survives restarts and upgrades.",
+          "tag": "rke2"
+        },
+        {
+          "id": "rke2-disable",
+          "type": "fill",
+          "prompt": "Which config.yaml key stops RKE2 from installing its bundled ingress-nginx?",
+          "accept": ["disable", "disable:", "disable: rke2-ingress-nginx"],
+          "placeholder": "config key",
+          "explain": "`disable: [rke2-ingress-nginx]`. On an existing cluster, also delete the HelmChart object — otherwise the helm-controller keeps the release installed even though RKE2 stopped managing the manifest."
+        },
+        {
+          "id": "manifests-dir",
+          "type": "mcq",
+          "prompt": "What does RKE2 do with YAML files placed in `/var/lib/rancher/rke2/server/manifests/`?",
+          "choices": [
+            "Applies them to the cluster automatically at startup, and reapplies on changes",
+            "Ignores them unless referenced from config.yaml",
+            "Treats them as static pod definitions",
+            "Uses them only during the initial bootstrap"
+          ],
+          "answer": 0,
+          "explain": "It is a built-in GitOps-lite for bootstrap resources — how RKE2 ships its own add-ons and a clean way to guarantee something exists before workloads start (a StorageClass, a PriorityClass, a namespace). Note it only applies; it does not prune deleted files.",
+          "tag": "rke2"
+        }
+      ]
+    },
+    {
+      "id": "rke2-join",
+      "title": "Bootstrapping and joining nodes",
+      "brief": "One node starts the cluster; everyone else joins it.\n\n- The **first server** starts with no `server:` key. It initialises etcd and generates the CAs.\n- **Additional servers** set `server: https://<fixed-address>:9345` and the same `token`. They join etcd and become full control-plane members.\n- **Agents** (workers) run `rke2-agent` with `server: https://<fixed-address>:9345` and a token.\n\nPort **9345** is the RKE2 **supervisor** port used for registration and bootstrap — distinct from the Kubernetes API on **6443**. Both must be reachable from joining nodes.\n\nThe `server:` address should be a **fixed registration address** — a load balancer or DNS name in front of all servers — not one node's IP. Pointing every node at server-1 means server-1 becomes a single point of failure for registration and for agent reconnection.\n\nThe token is at `/var/lib/rancher/rke2/server/node-token` on the first server, or whatever you set as `token:` in config. It is a bootstrap credential: anyone with it can join a node to your cluster.",
+      "examples": [
+        {
+          "label": "The three node roles",
+          "lang": "yaml",
+          "code": "# first server - initialises the cluster\ntoken: <shared-secret>\ntls-san: [k8s-prod.internal]\n\n# additional servers\nserver: https://k8s-prod.internal:9345\ntoken: <shared-secret>\ntls-san: [k8s-prod.internal]\n\n# agents (workers) - rke2-agent.service\nserver: https://k8s-prod.internal:9345\ntoken: <shared-secret>\nnode-label:\n  - \"role=worker\""
+        },
+        {
+          "label": "Ports that must be open between nodes",
+          "lang": "text",
+          "code": "9345/tcp   RKE2 supervisor (node registration)      servers <- servers, agents\n6443/tcp   Kubernetes API                            everything -> servers\n2379-2380  etcd client + peer                        servers <-> servers\n10250/tcp  kubelet API (logs, exec, metrics)         servers -> all nodes\n8472/udp   Flannel VXLAN (Canal default)             all <-> all\n4240/tcp   Cilium health (if using Cilium)"
+        },
+        {
+          "label": "Diagnosing a join failure",
+          "lang": "log",
+          "code": "level=error msg=\"failed to get CA certs: Get \\\"https://k8s-prod.internal:9345/cacerts\\\":\n  dial tcp 10.0.0.100:9345: connect: connection refused\"\n\nlevel=error msg=\"failed to validate token\"",
+          "note": "Two distinct problems: the first is network/port reachability to the supervisor, the second is a wrong token. The logs are precise if you read past the stack trace."
+        }
+      ],
+      "items": [
+        {
+          "id": "port-9345",
+          "type": "mcq",
+          "prompt": "What is port 9345 on an RKE2 server for?",
+          "choices": [
+            "The RKE2 supervisor API used by joining nodes to bootstrap and fetch certificates",
+            "The Kubernetes API server",
+            "etcd peer traffic",
+            "The metrics endpoint for Prometheus"
+          ],
+          "answer": 0,
+          "explain": "Registration and certificate distribution happen on 9345; the Kubernetes API is 6443. A firewall that allows 6443 but not 9345 gives you a cluster where kubectl works fine and no new node can ever join.",
+          "tag": "rke2"
+        },
+        {
+          "id": "fixed-address",
+          "type": "mcq",
+          "prompt": "All servers and agents are configured with `server: https://server-1.internal:9345`. Server-1 is destroyed. What breaks?",
+          "choices": [
+            "New joins and agent re-registration fail — the cluster keeps running but cannot be expanded or reliably restarted",
+            "The whole cluster goes down immediately",
+            "etcd loses quorum",
+            "Nothing, the address is only used once at install"
+          ],
+          "answer": 0,
+          "explain": "Existing nodes keep working, but the registration endpoint is gone. Use a fixed registration address — an LB or DNS record covering all servers — from the start; retrofitting it means reconfiguring every node.",
+          "tag": "HA"
+        },
+        {
+          "id": "join-order",
+          "type": "order",
+          "prompt": "Order the steps to build a 3-server HA RKE2 cluster.",
+          "steps": [
+            "Create the fixed registration address (LB/DNS) covering all three servers",
+            "Start server-1 with a token and tls-san, no server: key — it initialises etcd and the CAs",
+            "Start server-2 and server-3 with server: https://<fixed-address>:9345 and the same token",
+            "Confirm all three are etcd members and Ready",
+            "Join agents with the same fixed address and token"
+          ],
+          "explain": "Setting up the address first is what makes the rest of it work: every node, including the first, gets certificates that already contain the LB name. Adding servers 2 and 3 one at a time keeps etcd quorum sane while it grows.",
+          "tag": "operations"
+        },
+        {
+          "id": "token-sensitivity",
+          "type": "mcq",
+          "prompt": "How should the RKE2 join token be treated?",
+          "choices": [
+            "As a cluster-level credential — anyone holding it can register a node into the cluster",
+            "As a public identifier, safe to put in a git repo",
+            "As a one-time value that expires after first use",
+            "As a per-node value that must differ on each machine"
+          ],
+          "answer": 0,
+          "explain": "It is a long-lived bootstrap secret shared by every node. Keep it in a secrets manager, deliver it through your provisioning system, and rotate it if it leaks — a registered node can run pods and read what its kubelet is authorised for.",
+          "tag": "security"
+        }
+      ]
+    },
+    {
+      "id": "rke2-lifecycle",
+      "title": "Snapshots, certificates and upgrades",
+      "brief": "Three operational rhythms on an RKE2 cluster.\n\n**etcd snapshots.** Taken automatically on server nodes (default every 12h, 5 retained), stored in `/var/lib/rancher/rke2/server/db/snapshots/`, and optionally shipped to S3. Restore is a deliberate, disruptive procedure: stop RKE2 everywhere, restore on one server with `--cluster-reset`, then rejoin the others.\n\n**Certificates.** RKE2 issues client and serving certs with **1-year** validity and rotates them automatically when a server restarts within 90 days of expiry. A cluster that runs untouched for a year and *then* reboots comes back with expired certs and a control plane that will not start. `rke2 certificate check` tells you where you stand; `rke2 certificate rotate` (with the service stopped) fixes it.\n\n**Upgrades.** Either replace the binary and restart the unit, node by node (servers first, one at a time), or drive it declaratively with the **system-upgrade-controller** and `Plan` CRs — which is what Rancher does for you.",
+      "examples": [
+        {
+          "label": "Snapshot management",
+          "lang": "bash",
+          "code": "$ rke2 etcd-snapshot save --name before-upgrade\n$ rke2 etcd-snapshot list\n$ rke2 etcd-snapshot prune --snapshot-retention 10\n\n# config.yaml\netcd-snapshot-schedule-cron: \"0 */6 * * *\"\netcd-snapshot-retention: 20\netcd-s3: true\netcd-s3-bucket: k8s-backups\netcd-s3-endpoint: s3.internal",
+          "note": "A snapshot on the same disk as etcd is not a backup. Ship them off the node."
+        },
+        {
+          "label": "Certificate expiry, before it bites",
+          "lang": "bash",
+          "code": "$ rke2 certificate check\nChecking certificates in /var/lib/rancher/rke2/server/tls\n  serving-kube-apiserver.crt: expires May 02 2027 (243 days)\n  client-kube-apiserver.crt:  expires May 02 2027 (243 days)\n\n# to rotate:\n$ systemctl stop rke2-server\n$ rke2 certificate rotate\n$ systemctl start rke2-server",
+          "note": "Worth an alert. Expired control-plane certs on a cluster that has been stable for a year is a genuinely bad afternoon."
+        },
+        {
+          "label": "Declarative upgrade with a Plan",
+          "lang": "yaml",
+          "code": "apiVersion: upgrade.cattle.io/v1\nkind: Plan\nmetadata:\n  name: server-plan\n  namespace: system-upgrade\nspec:\n  concurrency: 1                 # one server at a time\n  version: v1.31.4+rke2r1\n  nodeSelector:\n    matchExpressions:\n    - key: node-role.kubernetes.io/control-plane\n      operator: In\n      values: [\"true\"]\n  serviceAccountName: system-upgrade\n  cordon: true\n  upgrade:\n    image: rancher/rke2-upgrade",
+          "note": "The controller cordons, drains, swaps the binary and restarts the unit per node. Servers first with concurrency 1, then a separate plan for agents."
+        }
+      ],
+      "items": [
+        {
+          "id": "cert-expiry",
+          "type": "mcq",
+          "prompt": "An RKE2 cluster has run untouched for 13 months. A control-plane node reboots and the API server will not start. Most likely cause?",
+          "choices": [
+            "The 1-year certificates expired — automatic rotation only happens on restart within 90 days of expiry",
+            "etcd lost quorum during the reboot",
+            "The containerd socket moved",
+            "The kubelet failed to re-register the node"
+          ],
+          "answer": 0,
+          "explain": "RKE2 rotates certs on startup when they are within 90 days of expiry. A cluster that never restarts never rotates. Stop the service, run `rke2 certificate rotate`, start it — and add an expiry alert so it never happens twice.",
+          "tag": "incident"
+        },
+        {
+          "id": "snapshot-restore",
+          "type": "order",
+          "prompt": "Order an etcd snapshot restore on a 3-server RKE2 cluster.",
+          "steps": [
+            "Stop rke2-server on all three servers",
+            "On one server, start with --cluster-reset --cluster-reset-restore-path=<snapshot>",
+            "Verify that server comes up healthy as a single-member cluster",
+            "Wipe /var/lib/rancher/rke2/server/db on the other two servers",
+            "Start the other two servers so they rejoin as fresh etcd members"
+          ],
+          "explain": "The restored node becomes the new source of truth; the others must discard their old etcd data or they will refuse to join a cluster with a different history. Any change made after the snapshot is gone.",
+          "tag": "disaster recovery"
+        },
+        {
+          "id": "upgrade-order",
+          "type": "mcq",
+          "prompt": "You are upgrading a 3-server, 6-agent RKE2 cluster by hand. What order and concurrency?",
+          "choices": [
+            "Servers first, one at a time, waiting for etcd and the API to be healthy between each; then agents",
+            "All servers at once for a shorter maintenance window, then agents",
+            "Agents first so workloads move to upgraded nodes",
+            "Order does not matter as long as versions differ by one minor at most"
+          ],
+          "answer": 0,
+          "explain": "Control plane before nodes (kubelets may not be newer than the API server), and one server at a time to keep etcd quorum. Restarting all three servers together loses quorum and takes the cluster down.",
+          "tag": "operations"
+        },
+        {
+          "id": "snapshot-location",
+          "type": "mcq",
+          "prompt": "Your etcd snapshot schedule is running and 20 snapshots are retained locally. What is still missing for real disaster recovery?",
+          "choices": [
+            "Off-node storage — snapshots on the same disk die with the node; configure etcd-s3 or ship them elsewhere",
+            "A longer retention period",
+            "More frequent snapshots",
+            "A second snapshot schedule on the agents"
+          ],
+          "answer": 0,
+          "explain": "Agents do not run etcd, so there is nothing to snapshot there. The gap is durability: a snapshot that only exists on the machine you are trying to recover from is not a backup. Restore-test it too — an untested restore is a hypothesis.",
+          "tag": "disaster recovery"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,315 @@
+{
+  "id": "controllers",
+  "title": "Objects, ownership and controllers",
+  "summary": "ownerReferences, garbage collection, finalizers, how a rollout really works, and what an operator is.",
+  "concepts": [
+    {
+      "id": "ownership",
+      "title": "ownerReferences and garbage collection",
+      "brief": "Kubernetes has no foreign keys. Instead, a child object carries `metadata.ownerReferences` pointing at its parent, and the **garbage collector** deletes children whose owner is gone.\n\n`Deployment → ReplicaSet → Pod` is two owner links, not one object doing three jobs.\n\nDeletion has three propagation policies:\n\n- **Background** (default for kubectl): the owner is deleted immediately, children are cleaned up afterwards\n- **Foreground**: the owner sits in `deletionTimestamp` with a `foregroundDeletion` finalizer until every child is gone, then it disappears\n- **Orphan**: children are kept and their ownerReference is stripped\n\nOwner and child must be in the same namespace (or the owner cluster-scoped). A cross-namespace ownerReference is invalid and gets the child deleted — a real trap when generating manifests.",
+      "examples": [
+        {
+          "label": "The chain, visible",
+          "lang": "bash",
+          "code": "$ kubectl get rs -l app=api\nNAME              DESIRED   CURRENT   READY   AGE\napi-6b8f9c7d4d    3         3         3       5d\n\n$ kubectl get rs api-6b8f9c7d4d -o jsonpath='{.metadata.ownerReferences}' | jq\n[{\"apiVersion\":\"apps/v1\",\"kind\":\"Deployment\",\"name\":\"api\",\n  \"uid\":\"3f2b...\",\"controller\":true,\"blockOwnerDeletion\":true}]",
+          "note": "`uid`, not name. Delete and recreate a Deployment with the same name and the old ReplicaSets are orphaned — the uid no longer matches."
+        },
+        {
+          "label": "Keeping the pods when deleting the parent",
+          "lang": "bash",
+          "code": "$ kubectl delete deployment api --cascade=orphan\ndeployment.apps \"api\" deleted\n\n$ kubectl get pods -l app=api\nNAME                    READY   STATUS    AGE\napi-6b8f9c7d4d-xk2p9    1/1     Running   5d      # still there, now unmanaged",
+          "note": "Useful in migrations when you want to replace a controller without restarting the workload."
+        }
+      ],
+      "items": [
+        {
+          "id": "owner-chain",
+          "type": "order",
+          "prompt": "Order the ownership chain from a `kubectl create deployment` to a running container.",
+          "steps": [
+            "Deployment object is created",
+            "Deployment controller creates a ReplicaSet owned by the Deployment",
+            "ReplicaSet controller creates Pods owned by the ReplicaSet",
+            "Scheduler binds each pod to a node",
+            "That node's kubelet starts the containers"
+          ],
+          "explain": "Five independent actors, each watching for its own input. Nobody orchestrates the sequence — it emerges from each controller doing its narrow job.",
+          "tag": "core idea"
+        },
+        {
+          "id": "gc-uid",
+          "type": "mcq",
+          "prompt": "You delete Deployment `api` and immediately recreate it with the same name and spec. What happens to the old ReplicaSets?",
+          "choices": [
+            "They are garbage collected — ownerReferences match on UID, and the new Deployment has a new UID",
+            "They are adopted by the new Deployment because the name matches",
+            "They stay forever as orphans",
+            "They are adopted only if the pod-template hash matches"
+          ],
+          "answer": 0,
+          "explain": "Ownership is by UID. The old RS points at a UID that no longer exists, so the GC removes it (and its pods). Same reason: never reuse a name and expect continuity — and never hand-write an ownerReference without the right UID.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "cascade-modes",
+          "type": "match",
+          "prompt": "Match the deletion policy to its behaviour.",
+          "pairs": [
+            ["Background", "Owner deleted at once, children cleaned up after"],
+            ["Foreground", "Owner stays Terminating until all children are gone"],
+            ["Orphan", "Children survive with their ownerReference removed"]
+          ],
+          "explain": "`kubectl delete --cascade=background|foreground|orphan`. Foreground is what you want when a controller must not see a half-deleted tree; orphan is the migration escape hatch."
+        },
+        {
+          "id": "cross-ns-owner",
+          "type": "mcq",
+          "prompt": "A generated manifest gives a ConfigMap in namespace `app` an ownerReference to a Deployment in namespace `platform`. What happens?",
+          "choices": [
+            "The reference is invalid; the garbage collector treats the owner as missing and deletes the ConfigMap",
+            "It works — ownerReferences are cluster-scoped",
+            "The API server rejects the ConfigMap at admission",
+            "The ConfigMap is silently moved to the platform namespace"
+          ],
+          "answer": 0,
+          "explain": "Cross-namespace ownership is not supported. The GC looks for the owner *in the child's namespace*, does not find it, and cleans up. Objects mysteriously vanishing minutes after creation is the classic symptom.",
+          "tag": "gotcha"
+        }
+      ]
+    },
+    {
+      "id": "finalizers",
+      "title": "Finalizers and stuck deletions",
+      "brief": "A finalizer is a string in `metadata.finalizers` that means: *do not actually delete this object until I have cleaned up*.\n\nDeleting an object with finalizers does not remove it. The API server sets `metadata.deletionTimestamp` and the object stays visible, `Terminating`, until every finalizer is removed by whoever owns it.\n\nThis is how a controller detaches a cloud load balancer before its Service disappears, or wipes a bucket before its CR goes.\n\nWhen the controller that owns a finalizer is uninstalled, nothing removes it — and the object hangs forever. A namespace stuck `Terminating` is nearly always one leftover object with an unsatisfied finalizer, most often a CR whose operator is gone.",
+      "examples": [
+        {
+          "label": "Finding what is actually blocking a namespace",
+          "lang": "bash",
+          "code": "$ kubectl get ns prod -o jsonpath='{.status.conditions}' | jq -r '.[].message'\nSome resources are remaining: databases.acid.zalan.do has 1 resource instances\n\n# find the object and its finalizer\n$ kubectl get databases.acid.zalan.do -n prod -o json |\n    jq '.items[] | {name:.metadata.name, fin:.metadata.finalizers}'\n{ \"name\": \"orders-db\", \"fin\": [\"postgres-operator.acid.zalan.do/finalizer\"] }",
+          "note": "Read the namespace *conditions* first. Force-deleting the namespace object hides the problem and leaks the underlying resources."
+        },
+        {
+          "label": "Removing a finalizer, deliberately",
+          "lang": "bash",
+          "code": "# only after confirming the external resource is really gone\n$ kubectl patch database orders-db -n prod --type=json \\\n    -p='[{\"op\":\"remove\",\"path\":\"/metadata/finalizers\"}]'\ndatabase.acid.zalan.do/orders-db patched",
+          "note": "This is deleting the safety catch, not fixing the cause. Whatever the operator was going to clean up (a volume, a DNS record, a cloud LB) is now your problem."
+        }
+      ],
+      "items": [
+        {
+          "id": "finalizer-effect",
+          "type": "mcq",
+          "prompt": "What does `kubectl delete` do to an object that has a finalizer?",
+          "choices": [
+            "Sets deletionTimestamp and leaves the object in place until the finalizer is removed",
+            "Deletes it and lets the controller clean up asynchronously",
+            "Fails with a 409 Conflict",
+            "Removes the finalizer automatically after 30 seconds"
+          ],
+          "answer": 0,
+          "explain": "The object becomes read-mostly and `Terminating`. Nothing times it out. Understanding this turns 'the namespace won't delete' from a mystery into a two-command diagnosis.",
+          "tag": "core idea"
+        },
+        {
+          "id": "ns-terminating",
+          "type": "mcq",
+          "prompt": "Namespace `prod` has been `Terminating` for two hours. What is the right first command?",
+          "choices": [
+            "kubectl get ns prod -o json | jq .status.conditions — to see which resources remain",
+            "Patch the namespace to drop its own finalizer",
+            "Restart kube-controller-manager",
+            "Delete the namespace with --force --grace-period=0"
+          ],
+          "answer": 0,
+          "explain": "The namespace status names the API group that still has instances. Removing the *namespace's* `kubernetes` finalizer forces the object out of etcd while leaving orphaned resources behind — sometimes still billing you in a cloud account.",
+          "tag": "debugging"
+        },
+        {
+          "id": "finalizer-risk",
+          "type": "multi",
+          "prompt": "You force-remove a finalizer from a CR whose operator was uninstalled. What might be left behind?",
+          "choices": [
+            "A cloud load balancer that nothing will delete",
+            "A persistent volume in the storage backend",
+            "A DNS record or firewall rule created by the operator",
+            "Corruption of the etcd database"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "The finalizer existed because something outside Kubernetes needed cleanup. etcd itself is fine — but your cloud bill may not be. Reinstall the operator, let it clean up properly, then uninstall it.",
+          "tag": "risk"
+        },
+        {
+          "id": "finalizer-field",
+          "type": "fill",
+          "prompt": "Which field does the API server set instead of deleting an object that has finalizers?",
+          "accept": ["deletiontimestamp", "metadata.deletiontimestamp", ".metadata.deletiontimestamp"],
+          "placeholder": "field path",
+          "explain": "`metadata.deletionTimestamp`. Controllers watch for it as the signal to start cleanup, then remove their finalizer. When the list is empty, the object is really deleted."
+        }
+      ]
+    },
+    {
+      "id": "rollouts",
+      "title": "How a rollout actually works",
+      "brief": "A Deployment never updates a Pod. It creates a **new ReplicaSet** and shifts replicas from old to new.\n\nThe new RS is named with a hash of the pod template, and that hash is also a label on the pods. Change the template → new hash → new RS. Change something outside the template (like `replicas`) → same RS, just resized.\n\nTwo knobs control the shape of the transition:\n\n- `maxSurge` — how many pods *above* the desired count may exist during the roll\n- `maxUnavailable` — how many below `replicas` may be unready\n\nWith `maxUnavailable: 0` you always keep full capacity but need room for surge pods. With `maxSurge: 0` you never exceed the replica count but dip in capacity.\n\nProgress is judged by `progressDeadlineSeconds` (default 600). When it expires the Deployment gets `Progressing=False` with reason `ProgressDeadlineExceeded` — it does **not** roll back on its own.",
+      "examples": [
+        {
+          "label": "Two ReplicaSets during a roll",
+          "lang": "bash",
+          "code": "$ kubectl get rs -l app=api\nNAME              DESIRED   CURRENT   READY   AGE\napi-6b8f9c7d4d    1         1         1       5d     # old, draining\napi-7d4c5b8a91    3         3         2       25s    # new, filling\n\n$ kubectl rollout status deploy/api\nWaiting for deployment \"api\" rollout to finish: 2 of 3 updated replicas are available...",
+          "note": "The old RS is kept at 0 replicas afterwards (see `revisionHistoryLimit`) — that is what `kubectl rollout undo` scales back up."
+        },
+        {
+          "label": "Surge and unavailability",
+          "lang": "yaml",
+          "code": "spec:\n  replicas: 4\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxSurge: 1            # at most 5 pods exist at once\n      maxUnavailable: 0      # never fewer than 4 ready\n  progressDeadlineSeconds: 600\n  revisionHistoryLimit: 10",
+          "note": "maxUnavailable: 0 needs spare cluster capacity for the surge pod, otherwise the roll simply stalls with a Pending pod."
+        },
+        {
+          "label": "A stalled rollout speaks",
+          "lang": "bash",
+          "code": "$ kubectl describe deploy api | grep -A4 Conditions\nConditions:\n  Type           Status  Reason\n  Available      True    MinimumReplicasAvailable\n  Progressing    False   ProgressDeadlineExceeded\n\n$ kubectl rollout undo deploy/api            # back to the previous RS\n$ kubectl rollout undo deploy/api --to-revision=3"
+        }
+      ],
+      "items": [
+        {
+          "id": "rollout-mechanism",
+          "type": "mcq",
+          "prompt": "You change the image in a Deployment. What does the Deployment controller do?",
+          "choices": [
+            "Creates a new ReplicaSet with a new pod-template hash and shifts replicas from the old one to it",
+            "Updates each existing pod's image in place",
+            "Deletes all pods, then recreates them with the new image",
+            "Tells the kubelets to pull the new image and restart the containers"
+          ],
+          "answer": 0,
+          "explain": "Pods are immutable in the ways that matter — the container image of a running pod is not edited in place. The unit of change is the ReplicaSet, which is exactly why rollback is just scaling the old RS back up.",
+          "tag": "core idea"
+        },
+        {
+          "id": "surge-math",
+          "type": "mcq",
+          "prompt": "`replicas: 10`, `maxSurge: 25%`, `maxUnavailable: 25%`. During the roll, what is the max total pods and min available?",
+          "choices": [
+            "Max 13 pods total, min 8 available",
+            "Max 10 pods total, min 8 available",
+            "Max 13 pods total, min 10 available",
+            "Max 12 pods total, min 7 available"
+          ],
+          "answer": 0,
+          "explain": "Percentages are of `replicas`: surge rounds up (10 + ceil(2.5) = 13), unavailable rounds down (10 - floor(2.5) = 8). Getting this wrong is how a rolling update quietly halves your capacity at peak.",
+          "tag": "maths"
+        },
+        {
+          "id": "progress-deadline",
+          "type": "mcq",
+          "prompt": "A rollout is stuck: `Progressing=False, reason=ProgressDeadlineExceeded`. What did Kubernetes do about it?",
+          "choices": [
+            "Nothing — it recorded the condition and left both ReplicaSets in place; rollback is a manual decision",
+            "It automatically rolled back to the previous revision",
+            "It deleted the new ReplicaSet",
+            "It restarted the deployment controller"
+          ],
+          "answer": 0,
+          "explain": "There is no auto-rollback in core Kubernetes. The condition is a signal for your CD tooling (Argo Rollouts, Flux) or a human. `kubectl rollout undo` is the manual fix.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "restart-trick",
+          "type": "fill",
+          "prompt": "Which `kubectl` command restarts every pod of a Deployment without changing its image?",
+          "accept": [
+            "kubectl rollout restart",
+            "rollout restart",
+            "kubectl rollout restart deployment",
+            "kubectl rollout restart deploy"
+          ],
+          "placeholder": "kubectl ...",
+          "explain": "`kubectl rollout restart deploy/api` adds a `kubectl.kubernetes.io/restartedAt` annotation to the **pod template**. That changes the template hash, so a new ReplicaSet is created and the normal rolling update carries it out — respecting maxSurge/maxUnavailable and your PDBs."
+        }
+      ]
+    },
+    {
+      "id": "crds",
+      "title": "CRDs and operators",
+      "brief": "A **CustomResourceDefinition** extends the API server with a new resource type. Once registered, your CR gets the whole machinery for free: RBAC, `kubectl get`, watches, admission, audit logs, etcd storage.\n\nA CRD alone does nothing but store objects. An **operator** is the controller that gives it meaning — the same watch/reconcile loop as any built-in controller, just running in a pod.\n\nThings worth knowing operationally:\n\n- CRDs are **cluster-scoped** objects, even when the resources they define are namespaced\n- Deleting a CRD deletes **every CR of that type** across all namespaces — a genuinely destructive act\n- Multiple versions can be served with a **conversion webhook**; exactly one is the storage version\n- A `status` subresource lets the controller write status without touching spec (and vice versa)\n\nRancher, cert-manager, Fleet and the RKE2 helm-controller are all this pattern.",
+      "examples": [
+        {
+          "label": "A CRD and its instance",
+          "lang": "yaml",
+          "code": "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: backups.ops.example.com     # must be <plural>.<group>\nspec:\n  group: ops.example.com\n  scope: Namespaced\n  names: { plural: backups, singular: backup, kind: Backup, shortNames: [bk] }\n  versions:\n  - name: v1\n    served: true\n    storage: true                    # exactly one version is the storage version\n    subresources: { status: {} }\n    schema:\n      openAPIV3Schema:\n        type: object\n        properties:\n          spec:\n            type: object\n            required: [schedule]\n            properties:\n              schedule: { type: string }"
+        },
+        {
+          "label": "The blast radius of deleting a CRD",
+          "lang": "bash",
+          "code": "$ kubectl get backups -A --no-headers | wc -l\n214\n\n$ kubectl delete crd backups.ops.example.com\n# all 214 Backup objects are deleted, in every namespace",
+          "note": "Helm uninstall does not usually remove CRDs, precisely because of this. Removing one by hand during a 'cleanup' has ended more than one production evening."
+        },
+        {
+          "label": "The RKE2 helm-controller does exactly this",
+          "lang": "bash",
+          "code": "$ kubectl -n kube-system get helmcharts.helm.cattle.io\nNAME                    JOB                          CHART\nrke2-canal              helm-install-rke2-canal      rke2-canal\nrke2-coredns            helm-install-rke2-coredns    rke2-coredns\nrke2-ingress-nginx      helm-install-rke2-ingress..  rke2-ingress-nginx",
+          "note": "A HelmChart CR is reconciled by spawning a Job that runs helm. That is how RKE2 installs its own add-ons using nothing but the Kubernetes API."
+        }
+      ],
+      "items": [
+        {
+          "id": "crd-vs-operator",
+          "type": "mcq",
+          "prompt": "You apply a CRD and create three custom resources. No operator is installed. What happens?",
+          "choices": [
+            "The objects are stored and queryable, but nothing acts on them",
+            "The API server rejects them without a controller registered",
+            "kube-controller-manager reconciles them generically",
+            "They stay Pending until an operator claims them"
+          ],
+          "answer": 0,
+          "explain": "A CRD is a schema plus storage. Meaning comes from a controller. This is also why a stuck CR with a finalizer never resolves once its operator is uninstalled — nobody is left to remove the finalizer.",
+          "tag": "core idea"
+        },
+        {
+          "id": "crd-delete-blast",
+          "type": "mcq",
+          "prompt": "What is the effect of `kubectl delete crd certificates.cert-manager.io` on a cluster using cert-manager?",
+          "choices": [
+            "Every Certificate object in every namespace is deleted along with the type",
+            "Only the CRD is removed; existing Certificates remain until recreated",
+            "The command is rejected while instances exist",
+            "Certificates become read-only"
+          ],
+          "answer": 0,
+          "explain": "Deleting a CRD cascades to all its instances cluster-wide. Combined with finalizers, the deletion can also hang halfway. Treat CRD deletion with the same care as dropping a database table.",
+          "tag": "danger"
+        },
+        {
+          "id": "crd-scope",
+          "type": "mcq",
+          "prompt": "Which statement about CRD scoping is right?",
+          "choices": [
+            "The CRD object itself is cluster-scoped; the resources it defines can be Namespaced or Cluster",
+            "Both the CRD and its resources are always namespaced",
+            "A namespaced CRD only serves its own namespace",
+            "Scope is chosen per custom resource at creation time"
+          ],
+          "answer": 0,
+          "explain": "`spec.scope: Namespaced|Cluster` controls the instances. The definition always lives cluster-wide — which is why two teams cannot install conflicting versions of the same CRD in different namespaces.",
+          "tag": "scope"
+        },
+        {
+          "id": "status-subresource",
+          "type": "mcq",
+          "prompt": "Why enable the `status` subresource on a CRD?",
+          "choices": [
+            "So the controller can update status without touching spec, and users updating spec cannot clobber status",
+            "So status appears in kubectl get output",
+            "It is required for the CRD to be served",
+            "It enables server-side apply"
+          ],
+          "answer": 0,
+          "explain": "It splits the object into two endpoints with separate write paths and RBAC. Without it, every status write is a full object update racing with user edits — a reliable source of 409 storms in a busy operator.",
+          "tag": "design"
+        }
+      ]
+    }
+  ]
+}

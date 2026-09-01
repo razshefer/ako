@@ -1,0 +1,239 @@
+{
+  "id": "storage",
+  "title": "Storage and CSI",
+  "summary": "PV/PVC binding, StorageClasses, what CSI drivers actually do, and why StatefulSet volumes outlive their pods.",
+  "concepts": [
+    {
+      "id": "pv-pvc",
+      "title": "PV, PVC and StorageClass",
+      "brief": "Three objects with a clean division of labour:\n\n- **PersistentVolumeClaim** — what the workload asks for (size, access mode, class). Namespaced.\n- **PersistentVolume** — the actual piece of storage. **Cluster-scoped**.\n- **StorageClass** — the recipe for creating PVs on demand, naming a provisioner and its parameters.\n\nWith a StorageClass, creating a PVC triggers **dynamic provisioning**: the external provisioner creates real storage, creates a PV for it, and binds the two. The binding is exclusive and one-to-one — a bound PV serves exactly one PVC, forever.\n\nTwo fields decide whether you lose data:\n\n- `persistentVolumeReclaimPolicy: Delete` (the default from most StorageClasses) — deleting the PVC destroys the underlying volume\n- `Retain` — the PV survives in `Released` state and must be cleaned up by hand\n\nAnd one field decides whether scheduling works: `volumeBindingMode: WaitForFirstConsumer` delays provisioning until a pod is scheduled, so the volume is created in the **right zone**. With `Immediate` on a multi-zone cluster you get volumes in zone A and pods that can only run in zone B.",
+      "examples": [
+        {
+          "label": "A StorageClass and what each field costs you",
+          "lang": "yaml",
+          "code": "apiVersion: storage.k8s.io/v1\nkind: StorageClass\nmetadata:\n  name: fast\n  annotations:\n    storageclass.kubernetes.io/is-default-class: \"true\"\nprovisioner: csi.trident.netapp.io\nreclaimPolicy: Delete              # PVC deleted => data gone\nallowVolumeExpansion: true         # can grow the PVC later\nvolumeBindingMode: WaitForFirstConsumer   # provision where the pod lands"
+        },
+        {
+          "label": "Pending PVC: read the events, not the spec",
+          "lang": "bash",
+          "code": "$ kubectl describe pvc data-postgres-0 | tail -5\nEvents:\n  Type     Reason              Message\n  ----     ------              -------\n  Normal   WaitForFirstConsumer  waiting for first consumer to be created before binding\n  Warning  ProvisioningFailed    failed to provision volume with StorageClass \"fast\":\n                                 rpc error: code = ResourceExhausted desc = no space left in aggregate",
+          "note": "`WaitForFirstConsumer` on its own is not an error — it is the class doing its job. The second line is the real failure, and it comes from the storage backend, not Kubernetes."
+        },
+        {
+          "label": "Rescuing a Retain volume",
+          "lang": "bash",
+          "code": "$ kubectl get pv\nNAME       CAPACITY   RECLAIM POLICY   STATUS     CLAIM\npvc-8a1f   100Gi      Retain           Released   prod/data-postgres-0\n\n# clear the stale claimRef so a new PVC can bind to it\n$ kubectl patch pv pvc-8a1f --type=json \\\n    -p='[{\"op\":\"remove\",\"path\":\"/spec/claimRef\"}]'"
+        }
+      ],
+      "items": [
+        {
+          "id": "reclaim-policy",
+          "type": "mcq",
+          "prompt": "A PVC is deleted. Its PV has `persistentVolumeReclaimPolicy: Delete`. What happens to the data?",
+          "choices": [
+            "The PV and the real volume in the storage backend are deleted — the data is gone",
+            "The PV becomes Released and keeps the data until manually removed",
+            "The PV is retained for the namespace's grace period",
+            "Kubernetes snapshots the volume before deleting"
+          ],
+          "answer": 0,
+          "explain": "`Delete` is the default for most dynamic StorageClasses, which means an accidental `kubectl delete pvc` (or a namespace deletion) destroys real data with no confirmation. For anything stateful and important, use a `Retain` class or protect it with policy.",
+          "tag": "danger"
+        },
+        {
+          "id": "binding-mode",
+          "type": "mcq",
+          "prompt": "Multi-zone cluster, `volumeBindingMode: Immediate`. A PVC is created, then a pod that uses it. What can go wrong?",
+          "choices": [
+            "The volume is provisioned in one zone before scheduling, and no node in that zone can fit the pod — it stays Pending forever",
+            "The pod is scheduled first and the volume follows it",
+            "The PVC binds to a PV in every zone",
+            "Nothing — Kubernetes migrates the volume to the pod's zone"
+          ],
+          "answer": 0,
+          "explain": "Volumes are zonal and cannot move. `WaitForFirstConsumer` exists precisely to invert the order: schedule first, provision in the winning node's zone. On any cluster with real zones this should be the default.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "pv-scope",
+          "type": "mcq",
+          "prompt": "Which of these is cluster-scoped rather than namespaced?",
+          "choices": ["PersistentVolume", "PersistentVolumeClaim", "Both are namespaced", "Neither"],
+          "answer": 0,
+          "explain": "PVs and StorageClasses are cluster-scoped; PVCs are namespaced. That is why granting a team `edit` in their namespace does not let them see PVs, and why a stale `claimRef` on a PV blocks a claim from a completely different namespace.",
+          "tag": "scope"
+        },
+        {
+          "id": "pvc-pending",
+          "type": "multi",
+          "prompt": "A PVC has been `Pending` for ten minutes. Which are plausible causes?",
+          "choices": [
+            "No default StorageClass and the PVC did not name one",
+            "The provisioner pod is crash-looping or its backend rejected the request",
+            "volumeBindingMode is WaitForFirstConsumer and no pod uses the PVC yet",
+            "The pod's image is still pulling"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "All three show up in `kubectl describe pvc` events. Image pulls happen after scheduling and have nothing to do with binding. Always read the PVC's events before touching the storage backend.",
+          "tag": "debugging"
+        }
+      ]
+    },
+    {
+      "id": "csi",
+      "title": "What a CSI driver does",
+      "brief": "CSI splits storage work into two places, and knowing which one is stuck saves a lot of time.\n\n**Controller side** (a Deployment, usually on control-plane or any node), made of sidecars around the vendor driver:\n\n- `external-provisioner` — watches PVCs, calls `CreateVolume`\n- `external-attacher` — creates/watches `VolumeAttachment` objects, calls `ControllerPublishVolume` (attach the disk to a node)\n- `external-resizer`, `external-snapshotter` — expansion and snapshots\n\n**Node side** (a DaemonSet on every node): `NodeStageVolume` (format + mount to a global staging path) and `NodePublishVolume` (bind-mount into the pod).\n\nSo the lifecycle is **provision → attach → stage → publish**, and each step fails differently. The most common production symptom is `Multi-Attach error for volume`: a RWO volume is still attached to a dead or unreachable node, so the replacement pod on a new node cannot get it.",
+      "examples": [
+        {
+          "label": "The multi-attach stall",
+          "lang": "log",
+          "code": "Warning  FailedAttachVolume  pod/postgres-0\n  Multi-Attach error for volume \"pvc-8a1f\":\n  Volume is already exclusively attached to one node and can't be attached to another\n\nWarning  FailedMount  pod/postgres-0\n  Unable to attach or mount volumes: unmounted volumes=[data],\n  timed out waiting for the condition",
+          "note": "Usually a node that died without detaching. The attach-detach controller waits (default ~6 minutes) before force-detaching. Deleting the stale Node object is what actually releases it."
+        },
+        {
+          "label": "Follow the attachment",
+          "lang": "bash",
+          "code": "$ kubectl get volumeattachment | grep pvc-8a1f\nNAME        ATTACHER               PV         NODE    ATTACHED\ncsi-9f2a1   csi.trident.netapp.io   pvc-8a1f   node3   true\n\n$ kubectl get node node3\nNAME    STATUS     ROLES    AGE\nnode3   NotReady   <none>   80d",
+          "note": "VolumeAttachment is a real API object. It tells you exactly which node the cluster believes is holding the disk."
+        },
+        {
+          "label": "The two halves of a CSI driver",
+          "lang": "bash",
+          "code": "$ kubectl -n kube-system get pods -l app=csi-driver -o wide\nNAME                          READY   NODE     # controller: provision/attach/resize\ncsi-controller-6d4f8b-2k9x    6/6     node1\nNAME                          READY   NODE     # node plugin: stage/publish, one per node\ncsi-node-4jx2z                3/3     node1\ncsi-node-8kd0p                3/3     node2\ncsi-node-p2m4v                3/3     node3"
+        }
+      ],
+      "items": [
+        {
+          "id": "csi-order",
+          "type": "order",
+          "prompt": "Order the CSI lifecycle for a new dynamically provisioned volume.",
+          "steps": [
+            "external-provisioner sees the PVC and calls CreateVolume on the backend",
+            "The PV is created and bound to the PVC",
+            "external-attacher creates a VolumeAttachment and attaches the disk to the chosen node",
+            "The node plugin stages the volume: formats if needed and mounts it to a global path",
+            "The node plugin publishes it: bind-mounts it into the pod's container"
+          ],
+          "explain": "Provision → attach → stage → publish. `FailedAttachVolume` is step 3 (controller side); `FailedMount` is steps 4-5 (node side). Knowing which one names the pod in the event tells you which pods to check.",
+          "tag": "lifecycle"
+        },
+        {
+          "id": "multi-attach",
+          "type": "mcq",
+          "prompt": "A node dies. Its StatefulSet pod is recreated on another node and reports `Multi-Attach error for volume`. Why?",
+          "choices": [
+            "The RWO volume is still recorded as attached to the dead node, and the control plane cannot safely detach it while the node is unreachable",
+            "The new node lacks the CSI node plugin",
+            "The PVC was deleted with the pod",
+            "The StorageClass does not allow expansion"
+          ],
+          "answer": 0,
+          "explain": "ReadWriteOnce means exactly one node. The attach-detach controller waits before force-detaching, because attaching a filesystem to two nodes at once corrupts it. Deleting the Node object (once you are certain the machine is really gone) releases the attachment immediately.",
+          "tag": "incident"
+        },
+        {
+          "id": "access-modes",
+          "type": "match",
+          "prompt": "Match the access mode to what it permits.",
+          "pairs": [
+            ["ReadWriteOnce", "Mounted read-write by pods on a single node"],
+            ["ReadWriteMany", "Mounted read-write by pods on many nodes (NFS/CephFS)"],
+            ["ReadOnlyMany", "Mounted read-only by pods on many nodes"],
+            ["ReadWriteOncePod", "Mounted read-write by exactly one pod in the cluster"]
+          ],
+          "explain": "RWO is per-**node**, not per-pod — two pods on the same node can share an RWO volume, which surprises people. `ReadWriteOncePod` is the mode that actually guarantees a single writer."
+        },
+        {
+          "id": "csi-split",
+          "type": "mcq",
+          "prompt": "PVCs bind fine, but pods on one specific node hang in `ContainerCreating` with `FailedMount`. Where do you look?",
+          "choices": [
+            "The CSI node plugin DaemonSet pod on that node",
+            "The external-provisioner in the CSI controller",
+            "The StorageClass parameters",
+            "The scheduler's volume binding plugin"
+          ],
+          "answer": 0,
+          "explain": "Binding working proves the controller side is healthy. Mount failures confined to one node point at that node's DaemonSet pod, its kubelet plugin registration, or missing host packages (nfs-utils, multipath, iscsid).",
+          "tag": "debugging"
+        }
+      ]
+    },
+    {
+      "id": "stateful-storage",
+      "title": "StatefulSets and their volumes",
+      "brief": "A StatefulSet gives each replica a **stable identity**: `web-0`, `web-1`, `web-2`, in that order, with a stable DNS name via a headless Service and its own PVC from `volumeClaimTemplates`.\n\nThe PVC is named `<template>-<statefulset>-<ordinal>` — `data-postgres-0` — and it is created once and **never deleted with the pod**. Delete the StatefulSet and the PVCs remain by design (unless you set `persistentVolumeClaimRetentionPolicy`). Recreate it with the same name and `postgres-0` reattaches to its old data.\n\nOrdering rules that catch people out:\n\n- Default `podManagementPolicy: OrderedReady` starts pods one at a time, in order, waiting for each to be Ready. One pod stuck Pending blocks the whole set. `Parallel` removes that constraint.\n- Scale-down happens in reverse ordinal order, one at a time.\n- Rolling updates go highest ordinal to lowest, and `partition` lets you do canaries within the set.",
+      "examples": [
+        {
+          "label": "Identity you can rely on",
+          "lang": "bash",
+          "code": "$ kubectl get pods -l app=postgres\nNAME         READY   STATUS    AGE\npostgres-0   1/1     Running   21d\npostgres-1   1/1     Running   21d\n\n$ kubectl get pvc\nNAME               STATUS   VOLUME     CAPACITY   AGE\ndata-postgres-0    Bound    pvc-8a1f   100Gi      21d\ndata-postgres-1    Bound    pvc-c3d9   100Gi      21d\n\n$ kubectl exec -it debug -- nslookup postgres-0.postgres\nName: postgres-0.postgres.prod.svc.cluster.local"
+        },
+        {
+          "label": "The template that creates them",
+          "lang": "yaml",
+          "code": "spec:\n  serviceName: postgres          # the headless Service\n  podManagementPolicy: OrderedReady\n  volumeClaimTemplates:\n  - metadata:\n      name: data\n    spec:\n      accessModes: [ReadWriteOnce]\n      storageClassName: fast\n      resources:\n        requests:\n          storage: 100Gi",
+          "note": "volumeClaimTemplates is immutable after creation — you cannot change the size here and have it apply. Resize the individual PVCs instead (if the class allows expansion)."
+        },
+        {
+          "label": "Deleting the set is not deleting the data",
+          "lang": "bash",
+          "code": "$ kubectl delete statefulset postgres\nstatefulset.apps \"postgres\" deleted\n\n$ kubectl get pvc\ndata-postgres-0    Bound    pvc-8a1f   100Gi     # still here\ndata-postgres-1    Bound    pvc-c3d9   100Gi",
+          "note": "Deliberate: it makes recreating the StatefulSet a safe operation. It also means an 'uninstall' can leave real, billable storage behind."
+        }
+      ],
+      "items": [
+        {
+          "id": "sts-pvc-lifecycle",
+          "type": "mcq",
+          "prompt": "You delete a StatefulSet with 3 replicas. What happens to its PVCs?",
+          "choices": [
+            "They remain — recreating the StatefulSet reattaches each pod to its original volume",
+            "They are deleted along with the pods",
+            "They become Released and must be manually rebound",
+            "They are deleted only if the reclaim policy is Delete"
+          ],
+          "answer": 0,
+          "explain": "PVCs from `volumeClaimTemplates` outlive the StatefulSet by default. That is what makes recreation safe, and what makes cleanup a two-step job. `persistentVolumeClaimRetentionPolicy` (stable since 1.27) lets you opt into deletion.",
+          "tag": "lifecycle"
+        },
+        {
+          "id": "sts-ordering",
+          "type": "mcq",
+          "prompt": "`postgres-1` is stuck Pending because no node satisfies its affinity. With the default podManagementPolicy, what happens to `postgres-2`?",
+          "choices": [
+            "It is never created — OrderedReady waits for each pod to be Ready before starting the next",
+            "It starts normally in parallel",
+            "It is created but stays Pending too",
+            "The StatefulSet rolls back to 1 replica"
+          ],
+          "answer": 0,
+          "explain": "OrderedReady is strictly sequential. One unschedulable pod halts the whole set — including a scale-up you are waiting on during an incident. `podManagementPolicy: Parallel` avoids it, at the cost of ordering guarantees your database may actually need.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "sts-pvc-name",
+          "type": "fill",
+          "prompt": "A StatefulSet `postgres` has a volumeClaimTemplate named `data`. What is the PVC name for the second replica?",
+          "accept": ["data-postgres-1"],
+          "placeholder": "pvc name",
+          "explain": "`<template>-<statefulset>-<ordinal>`, zero-indexed: `data-postgres-1`. Predictable naming is what lets you restore a backup into the right claim before the pod ever starts."
+        },
+        {
+          "id": "sts-vs-deploy",
+          "type": "multi",
+          "prompt": "What does a StatefulSet give you that a Deployment does not?",
+          "choices": [
+            "Stable, ordinal pod names that survive rescheduling",
+            "A per-replica PVC created from a template",
+            "A stable DNS name per pod via a headless Service",
+            "Faster rolling updates"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "Identity, storage and addressability per replica. Updates are actually *slower* — one at a time, highest ordinal first. If your workload does not need identity, a Deployment is simpler and rolls faster.",
+          "tag": "design"
+        }
+      ]
+    }
+  ]
+}

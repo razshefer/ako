@@ -1,0 +1,345 @@
+{
+  "id": "control-plane",
+  "title": "Control plane anatomy",
+  "summary": "kube-apiserver, etcd, controller-manager and scheduler: what each one owns and what happens without it.",
+  "concepts": [
+    {
+      "id": "apiserver",
+      "title": "kube-apiserver",
+      "brief": "The API server is the **only** component that talks to etcd. Everything else — kubelet, scheduler, controllers, your `kubectl`, Rancher — goes through its REST API.\n\nThat design has consequences you feel in production:\n\n- It is **stateless**, so you can run three of them behind a load balancer and scale horizontally.\n- It is the choke point for authentication, authorisation and admission. There is no back door to etcd.\n- If it goes down, you lose *control* of the cluster, not the cluster. Running pods keep running; kubelets keep restarting crashed containers from their local view.\n\nIt also serves the **watch** API: clients open a long-lived connection and get a stream of add/update/delete events instead of polling. Every controller in the system is built on this.",
+      "examples": [
+        {
+          "label": "Ask the API server about itself",
+          "lang": "bash",
+          "code": "$ kubectl get --raw /healthz\nok\n\n$ kubectl get --raw '/readyz?verbose' | head -5\n[+]ping ok\n[+]log ok\n[+]etcd ok\n[+]informer-sync ok\n[+]poststarthook/start-apiserver-admission-initializer ok",
+          "note": "`/healthz` is liveness, `/readyz` is 'ready to serve traffic'. `readyz` includes an etcd check — a very quick way to tell whether the API server or its datastore is the problem."
+        },
+        {
+          "label": "Watching, the thing every controller does",
+          "lang": "bash",
+          "code": "# a raw watch stream - this is what an informer opens under the hood\n$ kubectl get pods -w\n\n# same thing, unwrapped\n$ kubectl get --raw '/api/v1/namespaces/default/pods?watch=true&resourceVersion=0'",
+          "note": "The `resourceVersion` in the response is etcd's revision. A watch resumes from a revision, which is why controllers can restart without replaying the world."
+        },
+        {
+          "label": "In RKE2 it is a static pod",
+          "lang": "bash",
+          "code": "$ ls /var/lib/rancher/rke2/agent/pod-manifests/\netcd.yaml  kube-apiserver.yaml  kube-controller-manager.yaml  kube-scheduler.yaml\n\n$ crictl ps --name kube-apiserver\nCONTAINER      IMAGE          STATE     NAME             POD\n8b1f2c0a9d3e   hardened-...   Running   kube-apiserver   kube-apiserver-node1",
+          "note": "No Deployment, no scheduler involvement — the kubelet reads these files off disk and starts the containers itself."
+        }
+      ],
+      "items": [
+        {
+          "id": "who-talks-etcd",
+          "type": "mcq",
+          "prompt": "Which components write directly to etcd in a standard cluster?",
+          "choices": [
+            "Only kube-apiserver",
+            "kube-apiserver and kube-controller-manager",
+            "kube-apiserver, kube-scheduler and kubelet",
+            "Any component holding a valid client certificate"
+          ],
+          "answer": 0,
+          "explain": "Only kube-apiserver. Every other component — including the scheduler and controller-manager — reaches etcd *through* the API server. That is what makes authn/authz/admission unavoidable and lets you audit every change in one place."
+        },
+        {
+          "id": "apiserver-down",
+          "type": "multi",
+          "prompt": "The API server is down on all three control-plane nodes. Which of these still work?",
+          "choices": [
+            "Containers that are already running keep running",
+            "A kubelet restarts a container that crashed",
+            "A Deployment scales up after an HPA decision",
+            "A failed node's pods get rescheduled elsewhere",
+            "Service traffic keeps flowing through existing kube-proxy rules"
+          ],
+          "answers": [0, 1, 4],
+          "explain": "The data plane is decoupled from the control plane. Kubelets keep their local pod spec and restart containers; kube-proxy's iptables/IPVS rules stay in the kernel. What you lose is *change*: no scheduling, no scaling, no rescheduling, no new Services propagating.",
+          "tag": "failure mode"
+        },
+        {
+          "id": "apiserver-stateless",
+          "type": "mcq",
+          "prompt": "Why can you run three kube-apiservers active/active behind a load balancer, but only one active kube-controller-manager?",
+          "choices": [
+            "The API server is stateless; the controller-manager runs reconcile loops that must not be duplicated, so it uses leader election",
+            "The controller-manager holds an exclusive etcd lock at startup",
+            "The API server is licensed for HA and the controller-manager is not",
+            "kube-proxy can only route to one controller-manager"
+          ],
+          "answer": 0,
+          "explain": "All three API servers can serve reads and writes because state lives in etcd, not in the process. Controller-managers and schedulers all run, but only the leader acts — they hold a Lease in `kube-system` and renew it. Two active controller-managers would fight over the same objects.",
+          "tag": "HA"
+        },
+        {
+          "id": "leader-lease",
+          "type": "fill",
+          "prompt": "Which resource type do the controller-manager and scheduler use in `kube-system` to elect a leader? (the modern one, not the old endpoint/configmap trick)",
+          "accept": ["lease", "leases", "lease.coordination.k8s.io", "coordination.k8s.io/lease"],
+          "placeholder": "resource kind",
+          "explain": "`Lease` objects in `coordination.k8s.io`. `kubectl -n kube-system get lease` shows `kube-controller-manager`, `kube-scheduler`, and one Lease per node for node heartbeats. Older clusters used annotations on an Endpoints or ConfigMap object."
+        },
+        {
+          "id": "healthz-readyz",
+          "type": "mcq",
+          "prompt": "`kubectl get --raw '/readyz?verbose'` shows `[-]etcd failed: reason withheld` but `/healthz` returns ok. What does that tell you?",
+          "choices": [
+            "The API server process is alive but cannot reach its datastore, so it will not serve traffic",
+            "etcd is healthy and the API server is deadlocked",
+            "The certificate for etcd expired an hour ago, specifically",
+            "Nothing — readyz is always noisy on RKE2"
+          ],
+          "answer": 0,
+          "explain": "Liveness (`healthz`) and readiness (`readyz`) are deliberately different: the process is running, but a dependency check failed, so the load balancer should stop sending it traffic. Next step is to look at etcd directly rather than restarting the API server.",
+          "tag": "debugging"
+        }
+      ],
+      "links": [
+        { "label": "Kubernetes components", "url": "https://kubernetes.io/docs/concepts/overview/components/" }
+      ]
+    },
+    {
+      "id": "etcd",
+      "title": "etcd and quorum",
+      "brief": "etcd is a distributed key-value store using the **Raft** consensus algorithm. Every write goes to the leader and must be acknowledged by a **majority** of members before it is committed.\n\nMajority is why member counts are odd:\n\n- 3 members tolerate 1 failure (quorum 2)\n- 5 members tolerate 2 failures (quorum 3)\n- 4 members also tolerate only 1 failure — an extra member with no extra safety, and more write latency\n\nLose quorum and etcd goes **read-only-ish**: writes fail, so the whole cluster freezes for changes. This is the single most important failure mode to understand on a self-managed cluster.\n\netcd is also latency-sensitive: it fsyncs to disk on every commit. Slow disks show up as `apply request took too long` warnings and then as a laggy, flaky API server.",
+      "examples": [
+        {
+          "label": "Health of the members (RKE2 paths)",
+          "lang": "bash",
+          "code": "$ export ETCDCTL_API=3\n$ export ETCDCTL_ENDPOINTS=https://127.0.0.1:2379\n$ export ETCDCTL_CACERT=/var/lib/rancher/rke2/server/tls/etcd/server-ca.crt\n$ export ETCDCTL_CERT=/var/lib/rancher/rke2/server/tls/etcd/server-client.crt\n$ export ETCDCTL_KEY=/var/lib/rancher/rke2/server/tls/etcd/server-client.key\n\n$ etcdctl endpoint status --cluster -w table\n+---------------------------+------------------+---------+---------+-----------+\n|         ENDPOINT          |        ID        | VERSION | DB SIZE | IS LEADER |\n+---------------------------+------------------+---------+---------+-----------+\n| https://10.0.0.11:2379    | 8e9e05c52164694d |  3.5.13 |  412 MB |     true  |\n| https://10.0.0.12:2379    | 91bc3c398fb3c146 |  3.5.13 |  412 MB |    false  |\n| https://10.0.0.13:2379    | fd422379fda50e48 |  3.5.13 |  411 MB |    false  |\n+---------------------------+------------------+---------+---------+-----------+"
+        },
+        {
+          "label": "The warning that precedes an outage",
+          "lang": "log",
+          "code": "etcd  W | etcdserver: read-only range request \"key:\\\"/registry/pods/\\\" \" took too long (2.1s) to execute\netcd  W | etcdserver: apply request took too long (1.8s) [expected 100ms]\napiserver E | Timeout: Too large resource version / etcdserver: request timed out",
+          "note": "Almost always disk latency or a database that needs defragmenting — not CPU. Put etcd on its own fast disk."
+        },
+        {
+          "label": "Snapshots are your restore path",
+          "lang": "bash",
+          "code": "# RKE2 takes these automatically; on-demand:\n$ rke2 etcd-snapshot save --name pre-upgrade\n\n$ rke2 etcd-snapshot list\nNAME                    LOCATION                                              SIZE      CREATED\npre-upgrade-node1-...   /var/lib/rancher/rke2/server/db/snapshots/...          412M      2026-05-02T09:14:03Z",
+          "note": "Restoring an etcd snapshot rolls the *entire cluster state* back to that moment. It is a cluster-wide time machine, not a per-namespace undo."
+        }
+      ],
+      "items": [
+        {
+          "id": "quorum-math",
+          "type": "mcq",
+          "prompt": "You run a 5-member etcd cluster. Two nodes are down for maintenance and a third dies. What happens?",
+          "choices": [
+            "Quorum is lost (3 of 5 needed); writes fail and the cluster stops accepting changes",
+            "The remaining two members elect a leader and continue normally",
+            "etcd automatically shrinks the member list to 2 and keeps quorum",
+            "Reads fail but writes continue from the local cache"
+          ],
+          "answer": 0,
+          "explain": "Quorum for 5 members is 3. With only 2 alive there is no majority, so no leader can be elected and no write can commit. Existing workloads keep running, but the cluster is frozen until you restore a member or recover from a snapshot.",
+          "tag": "quorum"
+        },
+        {
+          "id": "even-members",
+          "type": "mcq",
+          "prompt": "Why is a 4-member etcd cluster a worse choice than a 3-member one?",
+          "choices": [
+            "Both tolerate only 1 failure, but 4 members add write latency and a larger split-brain surface",
+            "4 members cannot elect a leader at all",
+            "Raft requires a prime number of members",
+            "4 members tolerate 2 failures but lose read consistency"
+          ],
+          "answer": 0,
+          "explain": "Quorum of 4 is 3, so you can still only lose one member — identical fault tolerance to a 3-node cluster, but every write must be acknowledged by more peers. Even numbers buy you nothing.",
+          "tag": "quorum"
+        },
+        {
+          "id": "etcd-order",
+          "type": "order",
+          "prompt": "Put a successful etcd write in order.",
+          "steps": [
+            "kube-apiserver sends the write to the etcd leader",
+            "The leader appends the entry to its Raft log and replicates it to followers",
+            "A majority of members persist the entry and acknowledge",
+            "The leader commits the entry and bumps the global revision",
+            "kube-apiserver returns success with the new resourceVersion"
+          ],
+          "explain": "The commit happens only after a majority acknowledges — that is the whole safety guarantee. The revision that comes back becomes the object's `resourceVersion`, which is how watches resume and how optimistic concurrency works.",
+          "tag": "raft"
+        },
+        {
+          "id": "etcd-slow-disk",
+          "type": "mcq",
+          "prompt": "Logs show `apply request took too long (1.8s) [expected 100ms]` on all three etcd members, and the API server is intermittently timing out. Most likely cause?",
+          "choices": [
+            "Disk write latency (fsync) on the etcd volume",
+            "A CNI misconfiguration dropping packets between nodes",
+            "kube-scheduler thrashing over unschedulable pods",
+            "Too many namespaces in the cluster"
+          ],
+          "answer": 0,
+          "explain": "etcd fsyncs every committed entry. When all members degrade together it is nearly always storage — shared/spinning disks, noisy neighbours, or a database that has grown and needs defrag/compaction. Check `etcd_disk_wal_fsync_duration_seconds` and give etcd a dedicated SSD.",
+          "tag": "debugging"
+        },
+        {
+          "id": "etcd-restore-scope",
+          "type": "mcq",
+          "prompt": "Someone deleted a production namespace. You have an etcd snapshot from 20 minutes ago. What is the honest consequence of restoring it?",
+          "choices": [
+            "The entire cluster state rolls back 20 minutes — every object created or changed since then is lost",
+            "Only the deleted namespace is restored, other changes are preserved",
+            "Restoring merges the snapshot with current state, newest wins",
+            "Nothing changes until you restart the kubelets"
+          ],
+          "answer": 0,
+          "explain": "An etcd snapshot is the whole keyspace. Restore is all-or-nothing and cluster-wide. That is why per-object backups (Velero, GitOps manifests in Git) matter — etcd snapshots are for cluster disasters, not for undoing a `kubectl delete`.",
+          "tag": "operations"
+        }
+      ],
+      "links": [
+        { "label": "Operating etcd for Kubernetes", "url": "https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/" }
+      ]
+    },
+    {
+      "id": "kcm",
+      "title": "kube-controller-manager",
+      "brief": "One binary running dozens of independent control loops in goroutines. Each loop watches some objects and works to make the world match the spec.\n\nControllers you meet in incidents:\n\n- **node controller** — marks nodes `NotReady` when heartbeats stop, then evicts their pods after a toleration timeout\n- **replicaset / deployment controllers** — create and delete pods to hit the replica count\n- **endpointslice controller** — keeps Service backends in sync with ready pod IPs\n- **namespace controller** — deletes everything in a terminating namespace\n- **garbage collector** — deletes objects whose owner disappeared\n- **service account / token, PV binder, job, cronjob, ttl-after-finished...**\n\nAll of them share the same shape: *watch → compare desired vs actual → act → repeat*. None of them assume they only run once, which is why the system heals after restarts.",
+      "examples": [
+        {
+          "label": "Node goes quiet, controller reacts",
+          "lang": "bash",
+          "code": "# node stops sending Lease heartbeats\n$ kubectl get nodes\nNAME    STATUS     ROLES    AGE   VERSION\nnode3   NotReady   <none>   80d   v1.31.4+rke2r1\n\n# after 5m (default toleration), pods are marked for eviction\n$ kubectl get pod -o wide --field-selector spec.nodeName=node3\nNAME        READY   STATUS        NODE\napi-7c9d    1/1     Terminating   node3",
+          "note": "`--node-monitor-grace-period` (40s) decides *NotReady*; the `node.kubernetes.io/unreachable:NoExecute` toleration with `tolerationSeconds: 300` decides when pods actually go."
+        },
+        {
+          "label": "Which controllers are enabled",
+          "lang": "bash",
+          "code": "$ kubectl -n kube-system get pod kube-controller-manager-node1 -o yaml | grep -A3 'controllers'\n    - --controllers=*,bootstrapsigner,tokencleaner\n    - --leader-elect=true\n    - --node-monitor-grace-period=40s"
+        }
+      ],
+      "items": [
+        {
+          "id": "kcm-loop-shape",
+          "type": "mcq",
+          "prompt": "What is the shared shape of every Kubernetes controller?",
+          "choices": [
+            "Watch objects, compare desired spec to observed status, act to close the gap, repeat forever",
+            "Receive an RPC from the scheduler, execute it once, report back",
+            "Poll etcd every 30 seconds and apply a diff",
+            "Subscribe to a message queue and process events exactly once"
+          ],
+          "answer": 0,
+          "explain": "This is *level-triggered reconciliation*. Controllers act on observed state, not on a stream of commands they must not miss. Missing an event is survivable — the next resync sees the same gap and fixes it. It is why the system converges instead of drifting.",
+          "tag": "core idea"
+        },
+        {
+          "id": "kcm-match",
+          "type": "match",
+          "prompt": "Match the controller to what it does.",
+          "pairs": [
+            ["node controller", "Marks nodes NotReady and evicts their pods"],
+            ["endpointslice controller", "Keeps Service backends in sync with ready pod IPs"],
+            ["garbage collector", "Deletes objects whose owner no longer exists"],
+            ["namespace controller", "Empties a namespace stuck in Terminating"]
+          ],
+          "explain": "Knowing which loop owns a symptom cuts debugging time in half: a Service with no endpoints is an endpointslice-controller/readiness question, while a namespace stuck Terminating is almost always a finalizer the namespace controller is waiting on."
+        },
+        {
+          "id": "kcm-eviction-timing",
+          "type": "mcq",
+          "prompt": "A node loses network connectivity. With defaults, roughly how long until its pods are marked for deletion so they can run elsewhere?",
+          "choices": [
+            "~40 seconds to NotReady, then ~5 minutes before eviction",
+            "Immediately — the scheduler reschedules on the next loop",
+            "~10 seconds total",
+            "Never, unless you drain the node manually"
+          ],
+          "answer": 0,
+          "explain": "`--node-monitor-grace-period=40s` flips the node to NotReady; the taint `node.kubernetes.io/unreachable:NoExecute` is then tolerated for 300s by default before pods are evicted. Total: roughly 5m40s. Shorten `tolerationSeconds` per-pod if your app needs faster failover — but expect more churn on flaky networks.",
+          "tag": "timing"
+        },
+        {
+          "id": "kcm-statefulset-note",
+          "type": "mcq",
+          "prompt": "A node running a StatefulSet pod becomes unreachable. Why does the replacement pod stay `Pending` instead of starting elsewhere?",
+          "choices": [
+            "StatefulSet identity must be unique, and the control plane cannot prove the old pod is really gone while the node is unreachable",
+            "StatefulSets are not managed by the controller-manager",
+            "The scheduler refuses to place pods with PVCs",
+            "The default toleration for StatefulSets is infinite"
+          ],
+          "answer": 0,
+          "explain": "Unreachable is not the same as dead. Starting `web-0` twice could corrupt shared storage, so Kubernetes waits: the pod stays Terminating until the node returns or you force-delete it (or the node object is removed). This surprises people every time a node partitions.",
+          "tag": "gotcha"
+        }
+      ]
+    },
+    {
+      "id": "scheduler-intro",
+      "title": "kube-scheduler in one loop",
+      "brief": "The scheduler watches for pods with an empty `spec.nodeName` and decides where they go. It does **not** start containers — it writes a **Binding**, and the kubelet on that node takes it from there.\n\nEach pod goes through two phases:\n\n- **Filter** (predicates): which nodes *could* run this pod? Resources, taints, node selectors, affinity, volume topology.\n- **Score** (priorities): of those, which is *best*? Spread across zones, least-requested resources, image already present.\n\nIt scores on **requests**, never on actual usage. A node at 95% real CPU with only small requests booked looks empty to the scheduler.",
+      "examples": [
+        {
+          "label": "The decision, visible in events",
+          "lang": "bash",
+          "code": "$ kubectl describe pod api-7c9d | tail -6\nEvents:\n  Type     Reason            Age   From               Message\n  ----     ------            ----  ----               -------\n  Warning  FailedScheduling  62s   default-scheduler  0/6 nodes are available:\n           2 Insufficient cpu, 3 node(s) had untolerated taint {node-role.kubernetes.io/control-plane: },\n           1 node(s) didn't match pod anti-affinity rules.",
+          "note": "Read this message as the filter phase reporting why each node was rejected. It is the single most useful line in scheduling debugging."
+        },
+        {
+          "label": "Bypassing the scheduler entirely",
+          "lang": "yaml",
+          "code": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: pinned\nspec:\n  nodeName: node3        # set directly - scheduler never sees this pod\n  containers:\n  - name: app\n    image: nginx",
+          "note": "Setting `nodeName` skips scheduling, and skips every filter with it: no resource check, no taint check. The kubelet on node3 just runs it — or the pod stays Pending forever if that node does not exist."
+        }
+      ],
+      "items": [
+        {
+          "id": "sched-binding",
+          "type": "mcq",
+          "prompt": "The scheduler picks node2 for a pod. What does it actually do next?",
+          "choices": [
+            "Writes a Binding object to the API server, setting the pod's nodeName; the kubelet on node2 then starts it",
+            "Connects to node2's kubelet over gRPC and asks it to start the pod",
+            "Tells containerd on node2 to pull the image",
+            "Updates etcd directly with the pod placement"
+          ],
+          "answer": 0,
+          "explain": "Everything is mediated by the API server. The scheduler's whole job is to fill in one field. The kubelet on node2 is watching for pods bound to itself and picks it up — no component ever pushes work to a node.",
+          "tag": "core idea"
+        },
+        {
+          "id": "sched-requests",
+          "type": "mcq",
+          "prompt": "node1 sits at 92% actual CPU but its pods only *request* 300m total. A new pod requests 2 CPU. What does the scheduler think?",
+          "choices": [
+            "node1 has plenty of allocatable CPU left and is a fine candidate",
+            "node1 is full and will be filtered out",
+            "It checks live metrics from the metrics-server and skips node1",
+            "It refuses to schedule until utilisation drops"
+          ],
+          "answer": 0,
+          "explain": "Scheduling is a bookkeeping exercise over **requests**, not a load balancer over real usage. This is exactly how you end up with hot nodes: requests set far below real consumption. Fixing it means setting honest requests (or using a descheduler / VPA), not tuning the scheduler.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "sched-phases",
+          "type": "fill",
+          "prompt": "The scheduler first eliminates impossible nodes, then ranks the survivors. Name the *first* phase.",
+          "accept": ["filter", "filtering", "predicates", "filter phase"],
+          "placeholder": "phase name",
+          "explain": "Filter (historically 'predicates') narrows candidates to feasible nodes; Score (historically 'priorities') ranks them. `FailedScheduling` messages are the filter phase explaining itself."
+        },
+        {
+          "id": "sched-nodename",
+          "type": "multi",
+          "prompt": "You set `spec.nodeName` directly on a pod. What do you give up?",
+          "choices": [
+            "Resource fit checking — it can be admitted onto a full node",
+            "Taint and toleration enforcement by the scheduler",
+            "The ability for the kubelet to run it at all",
+            "Rescheduling if that node is drained or dies"
+          ],
+          "answers": [0, 1, 3],
+          "explain": "The kubelet still runs it (option 3 is wrong), but you have opted out of every scheduling guarantee. The kubelet may still reject it later if the node genuinely lacks resources — you get an `OutOfcpu` pod instead of a clean Pending. Static pods and some DaemonSet-like tooling use this deliberately.",
+          "tag": "gotcha"
+        }
+      ]
+    }
+  ]
+}

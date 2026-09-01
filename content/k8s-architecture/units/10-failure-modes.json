@@ -1,0 +1,330 @@
+{
+  "id": "failure-modes",
+  "title": "Failure modes and triage",
+  "summary": "Reading pod states, diagnosing NotReady nodes, probes and graceful shutdown, and triaging a sick control plane.",
+  "concepts": [
+    {
+      "id": "pod-states",
+      "title": "Reading a pod's state",
+      "brief": "Each pod state points at a different layer, which makes triage mechanical rather than intuitive.\n\n- **Pending** — no node accepted it yet. Scheduler problem: resources, taints, affinity, or an unbound PVC. `kubectl describe pod` has the exact reason.\n- **ContainerCreating** — scheduled, but the kubelet cannot finish setup: image pull, volume mount/attach, CNI IP allocation, or a missing Secret/ConfigMap.\n- **CrashLoopBackOff** — the container starts and exits repeatedly. This is an *application* state, not a Kubernetes one. Backoff grows to 5 minutes.\n- **ImagePullBackOff / ErrImagePull** — registry, credentials, tag, or containerd config.\n- **Init:0/2** — an init container has not finished; look at its logs, not the app's.\n- **Terminating (stuck)** — a finalizer, or a node that is gone.\n\nTwo commands cover most of it: `kubectl describe pod` (events, why the kubelet or scheduler is unhappy) and `kubectl logs --previous` (why the process died last time).",
+      "examples": [
+        {
+          "label": "The three commands, in order",
+          "lang": "bash",
+          "code": "$ kubectl describe pod api-7c9d | tail -20        # events: scheduler + kubelet\n$ kubectl logs api-7c9d --previous                # the crash that caused the restart\n$ kubectl get pod api-7c9d -o jsonpath='{.status.containerStatuses[0].lastState}' | jq\n{ \"terminated\": { \"exitCode\": 137, \"reason\": \"OOMKilled\", \"finishedAt\": \"...\" } }",
+          "note": "`--previous` is the one people forget. Current logs of a crash-looping pod are usually empty or half-written."
+        },
+        {
+          "label": "Exit codes worth recognising",
+          "lang": "text",
+          "code": "0     clean exit - if it keeps restarting, the process is not staying in the foreground\n1     generic application error - read the logs\n125   container runtime failed to run the container\n126   command found but not executable (bad entrypoint permissions)\n127   command not found (wrong path, wrong base image, missing shell)\n137   SIGKILL  - OOMKilled, or a grace period that expired during shutdown\n139   SIGSEGV  - segfault\n143   SIGTERM  - terminated gracefully (normal during a rollout)"
+        },
+        {
+          "label": "Debugging a container with no shell",
+          "lang": "bash",
+          "code": "$ kubectl debug -it api-7c9d --image=nicolaka/netshoot --target=api\n# shares the target's process and network namespace - distroless friendly\n\n$ kubectl debug node/node3 -it --image=busybox\n# a pod on the node with the host filesystem at /host"
+        }
+      ],
+      "items": [
+        {
+          "id": "state-layer",
+          "type": "match",
+          "prompt": "Match the pod state to the layer that owns the problem.",
+          "pairs": [
+            ["Pending", "Scheduler could not place it"],
+            ["ContainerCreating", "kubelet setup: image, volume or CNI"],
+            ["CrashLoopBackOff", "The application exits after starting"],
+            ["Terminating for hours", "A finalizer or an unreachable node"]
+          ],
+          "explain": "Naming the layer first stops you from reading application logs for a scheduling problem — or scaling nodes for an application crash."
+        },
+        {
+          "id": "crashloop-first-move",
+          "type": "mcq",
+          "prompt": "A pod is in CrashLoopBackOff. What is the most useful first command?",
+          "choices": [
+            "kubectl logs <pod> --previous",
+            "kubectl delete pod <pod>",
+            "kubectl rollout restart deploy",
+            "kubectl describe node"
+          ],
+          "answer": 0,
+          "explain": "The container is currently between restarts, so its live logs show little. `--previous` gives you the output of the run that actually failed. Deleting the pod just restarts the loop with no new information.",
+          "tag": "triage"
+        },
+        {
+          "id": "exit-127",
+          "type": "mcq",
+          "prompt": "A container exits immediately with code 127. What does that mean?",
+          "choices": [
+            "Command not found — usually a wrong entrypoint path or a base image without a shell",
+            "Out of memory",
+            "Permission denied on the entrypoint",
+            "The image failed to pull"
+          ],
+          "answer": 0,
+          "explain": "127 is the shell's 'command not found'. Very common when moving to distroless or Alpine images where `/bin/bash` or the expected binary path does not exist. 126 is the adjacent case: found, but not executable.",
+          "tag": "exit codes"
+        },
+        {
+          "id": "containercreating",
+          "type": "multi",
+          "prompt": "A pod is stuck in `ContainerCreating`. Which causes fit?",
+          "choices": [
+            "A referenced Secret or ConfigMap does not exist yet",
+            "The CSI volume cannot be attached to the node",
+            "The CNI cannot allocate a pod IP",
+            "No node has enough CPU for the pod's request"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "Insufficient CPU keeps a pod in **Pending** — it never gets scheduled. Once it is on a node, the remaining setup is the kubelet's job, and its events name the failing step precisely.",
+          "tag": "triage"
+        }
+      ]
+    },
+    {
+      "id": "probes",
+      "title": "Probes and graceful shutdown",
+      "brief": "Three probes with three different consequences:\n\n- **liveness** — failing restarts the container. A liveness probe that checks a dependency turns a downstream outage into a cluster-wide restart storm.\n- **readiness** — failing removes the pod from EndpointSlices. No restart, no traffic. This is the one that protects users.\n- **startup** — suspends the other two until the app has booted. The right fix for slow-starting apps, instead of a huge `initialDelaySeconds` on liveness.\n\nShutdown is a race you have to design for. On pod deletion, two things happen **in parallel**: the endpoint is removed from EndpointSlices (and eventually from every node's iptables rules), and the container gets SIGTERM. Nothing coordinates them.\n\nSo a pod can receive new connections *after* SIGTERM — the classic source of 502s during a rollout. The fix is a `preStop` sleep of a few seconds: keep serving while the endpoint removal propagates, then start draining. After `terminationGracePeriodSeconds` (default 30) the process is SIGKILLed.",
+      "examples": [
+        {
+          "label": "Probes that do their actual jobs",
+          "lang": "yaml",
+          "code": "startupProbe:                 # up to 5 minutes to boot\n  httpGet: { path: /healthz, port: 8080 }\n  failureThreshold: 30\n  periodSeconds: 10\n\nlivenessProbe:                # is THIS process wedged?\n  httpGet: { path: /healthz, port: 8080 }   # no DB check here\n  periodSeconds: 10\n  failureThreshold: 3\n\nreadinessProbe:               # should I get traffic right now?\n  httpGet: { path: /ready, port: 8080 }     # dependencies belong here\n  periodSeconds: 5"
+        },
+        {
+          "label": "The preStop sleep that removes rollout 502s",
+          "lang": "yaml",
+          "code": "spec:\n  terminationGracePeriodSeconds: 45\n  containers:\n  - name: api\n    lifecycle:\n      preStop:\n        exec:\n          command: [\"/bin/sh\", \"-c\", \"sleep 8\"]",
+          "note": "SIGTERM is delayed by the preStop hook, so the pod keeps serving while endpoint removal propagates to every node's kube-proxy. The grace period must exceed preStop + real drain time."
+        },
+        {
+          "label": "The shutdown sequence",
+          "lang": "text",
+          "code": "kubectl delete pod\n  |-- deletionTimestamp set\n  |-- endpointslice controller removes the endpoint\n  |     -> kube-proxy on each node rewrites rules   (takes time, unsynchronised)\n  \\-- kubelet runs preStop hook, then sends SIGTERM\n        -> app drains\n        -> after terminationGracePeriodSeconds: SIGKILL"
+        }
+      ],
+      "items": [
+        {
+          "id": "liveness-vs-readiness",
+          "type": "mcq",
+          "prompt": "A liveness probe checks that the database is reachable. The database has a 3-minute outage. What happens to your 40 pods?",
+          "choices": [
+            "All 40 fail liveness and are restarted, turning a dependency blip into a full outage with cold caches",
+            "They are removed from the Service and restored when the database returns",
+            "Nothing — liveness failures only log a warning",
+            "They are evicted and rescheduled to other nodes"
+          ],
+          "answer": 0,
+          "explain": "Liveness answers 'is this process wedged and does a restart help?' — a database outage is not fixed by restarting your app. Dependency checks belong in **readiness**, where the effect is 'stop sending traffic' rather than 'kill everything'.",
+          "tag": "design"
+        },
+        {
+          "id": "startup-probe",
+          "type": "mcq",
+          "prompt": "A JVM app takes 3 minutes to start. What is the right probe configuration?",
+          "choices": [
+            "A startupProbe with a generous failureThreshold, which suspends liveness and readiness until it passes",
+            "A liveness probe with initialDelaySeconds: 200",
+            "Remove the liveness probe",
+            "A readiness probe with a 200-second period"
+          ],
+          "answer": 0,
+          "explain": "A long `initialDelaySeconds` also delays detection of a genuine hang for the whole life of the container. A startup probe gives slow boots as long as they need, then hands over to a tight liveness probe.",
+          "tag": "design"
+        },
+        {
+          "id": "shutdown-race",
+          "type": "mcq",
+          "prompt": "Why can a pod receive new requests after it has already got SIGTERM?",
+          "choices": [
+            "Endpoint removal and SIGTERM happen in parallel, and kube-proxy rule updates on every node take time to propagate",
+            "kube-proxy caches connections for 30 seconds by design",
+            "The readiness probe keeps passing until the process exits",
+            "Because the Service still resolves in DNS"
+          ],
+          "answer": 0,
+          "explain": "There is no coordination between the two paths. A `preStop` sleep of 5-10 seconds bridges the gap: keep serving, let the rules catch up, then drain. It is the single most effective fix for 502s during deploys.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "grace-period",
+          "type": "mcq",
+          "prompt": "`terminationGracePeriodSeconds: 30`, a preStop sleep of 10s, and the app needs 25s to drain. What happens?",
+          "choices": [
+            "The app is SIGKILLed mid-drain — the grace period covers preStop plus draining, so 35s of work does not fit in 30s",
+            "The grace period restarts after preStop finishes",
+            "The kubelet extends the period automatically",
+            "The pod is evicted instead of killed"
+          ],
+          "answer": 0,
+          "explain": "The clock starts when deletion begins and covers everything: preStop hook plus post-SIGTERM draining. Size it as preStop + worst-case drain + margin — here, 45-60 seconds.",
+          "tag": "maths"
+        }
+      ]
+    },
+    {
+      "id": "node-notready",
+      "title": "A node goes NotReady",
+      "brief": "`NotReady` means the API server has not had a healthy status from that node's kubelet — the Lease stopped renewing, or the kubelet is reporting a bad condition.\n\nThe usual causes, roughly in order of frequency:\n\n- The kubelet process is down or crash-looping (`systemctl status rke2-agent`, `journalctl -u rke2-agent`)\n- The container runtime is unhealthy — the kubelet cannot talk to containerd, so it reports NotReady\n- **CNI not ready**: `runtime network not ready: cni plugin not initialized` — very common after a rebuild, when the CNI DaemonSet has not started\n- Disk full on `/var/lib` — containerd and the kubelet both fail in confusing ways\n- Network partition between the node and the control plane\n- Expired kubelet client certificate on a node that has been off for a long time\n\nBecause the diagnosis is on the node, `kubectl` may not help. `journalctl -u rke2-agent`, `crictl ps`, `df -h` and `systemctl status` are the tools.",
+      "examples": [
+        {
+          "label": "Start from the conditions",
+          "lang": "bash",
+          "code": "$ kubectl describe node node3 | grep -A8 Conditions:\n  Type             Status    Reason                       Message\n  MemoryPressure   Unknown   NodeStatusUnknown            Kubelet stopped posting node status\n  DiskPressure     Unknown   NodeStatusUnknown            Kubelet stopped posting node status\n  Ready            Unknown   NodeStatusUnknown            Kubelet stopped posting node status",
+          "note": "`Unknown` means silence — the kubelet is not reporting at all. A `False` Ready with a real message means the kubelet is alive and telling you what is wrong."
+        },
+        {
+          "label": "The CNI variant",
+          "lang": "log",
+          "code": "$ journalctl -u rke2-agent -n 30 --no-pager\nkubelet: E  kubelet.go:2419] \"Container runtime network not ready\"\n  networkReady=\"NetworkReady=false reason:NetworkPluginNotReady\n  message:Network plugin returns error: cni plugin not initialized\"\n\n$ ls /etc/cni/net.d/          # empty = the CNI DaemonSet never wrote its config\n$ crictl pods --name canal",
+          "note": "Chicken-and-egg by design: the CNI runs as a pod, so the node is NotReady until that pod lands. DaemonSet tolerations are what break the loop."
+        },
+        {
+          "label": "On-node triage sequence",
+          "lang": "bash",
+          "code": "$ systemctl status rke2-agent          # or rke2-server\n$ journalctl -u rke2-agent -n 200 --no-pager | grep -iE 'error|fail'\n$ df -h /var/lib /var/log              # full disk is a top cause\n$ crictl ps -a | head\n$ crictl info | jq .status.conditions"
+        }
+      ],
+      "items": [
+        {
+          "id": "notready-meaning",
+          "type": "mcq",
+          "prompt": "A node's Ready condition is `Unknown` with reason `NodeStatusUnknown`. What does that specifically tell you?",
+          "choices": [
+            "The kubelet has stopped reporting entirely — the node may be down, partitioned, or its kubelet is dead",
+            "The kubelet is running and reporting a specific failure",
+            "The node is cordoned",
+            "The scheduler has excluded the node"
+          ],
+          "answer": 0,
+          "explain": "`Unknown` is silence; `False` is a complaint. Silence means go to the node (or its hypervisor/console). A `False` Ready with a message means the kubelet is alive and has already told you the cause.",
+          "tag": "triage"
+        },
+        {
+          "id": "cni-not-ready",
+          "type": "mcq",
+          "prompt": "A freshly joined RKE2 node is NotReady with `cni plugin not initialized`. What is happening?",
+          "choices": [
+            "The CNI DaemonSet pod has not started and written /etc/cni/net.d yet, so the kubelet cannot report network readiness",
+            "The node needs a manual CNI binary installation",
+            "The pod CIDR was not assigned to the node",
+            "kube-proxy must start before the CNI"
+          ],
+          "answer": 0,
+          "explain": "Normal for the first minute after joining. If it persists: check the Canal/Calico pods for that node, image pull access to the registry, and whether a taint is stopping the DaemonSet from being placed.",
+          "tag": "rke2"
+        },
+        {
+          "id": "notready-tools",
+          "type": "multi",
+          "prompt": "kubectl says a node is NotReady and you have SSH access. Which are useful on the node itself?",
+          "choices": [
+            "journalctl -u rke2-agent",
+            "crictl ps -a",
+            "df -h /var/lib",
+            "kubectl get pods --field-selector spec.nodeName=node3"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "The fourth tells you what the *control plane* believes, which is exactly the view you already know is stale. Node-local tooling is what you need when the node has stopped talking.",
+          "tag": "triage"
+        },
+        {
+          "id": "notready-consequence",
+          "type": "mcq",
+          "prompt": "node3 has been NotReady for 10 minutes. What has the control plane already done?",
+          "choices": [
+            "Tainted it unreachable, evicted its pods after the 300s toleration, and rescheduled the ones that could move",
+            "Nothing until an operator intervenes",
+            "Deleted the Node object automatically",
+            "Migrated its running containers to another node"
+          ],
+          "answer": 0,
+          "explain": "Nothing is migrated — pods are recreated elsewhere from their controllers. Anything not owned by a controller (a bare pod) is simply gone, and StatefulSet pods stay Terminating until the node returns or is deleted.",
+          "tag": "timing"
+        }
+      ]
+    },
+    {
+      "id": "cp-triage",
+      "title": "Triaging a sick control plane",
+      "brief": "When `kubectl` is slow, flaky or dead, work **downwards** through the layers instead of guessing.\n\n- **Can you reach the endpoint at all?** `curl -k https://<api>:6443/healthz` — timeout is network/LB, `401` is fine (the server is alive, you are just not authenticated).\n- **Is the API server ready?** `/readyz?verbose` names the failing check, very often etcd.\n- **Is etcd healthy?** `etcdctl endpoint status --cluster`. Check for a leader, agreement on the revision, and DB size.\n- **Are the static pods running?** `crictl ps` on a server node — this works with no API server at all.\n- **What does the supervisor say?** `journalctl -u rke2-server -n 200`.\n- **Certificates?** `rke2 certificate check` — expiry breaks everything at once, right after a restart.\n\nAlso remember what a broken control plane does *not* break: running pods, existing Service routing, and kubelet-local container restarts. That buys you time — resist the urge to reboot nodes.",
+      "examples": [
+        {
+          "label": "Top-down in five commands",
+          "lang": "bash",
+          "code": "$ curl -sk https://k8s-prod.internal:6443/healthz            # reachable?\n$ kubectl get --raw '/readyz?verbose' | grep -v ' ok'          # which check fails?\n$ etcdctl endpoint status --cluster -w table                   # leader? revisions agree?\n$ crictl ps --name kube-apiserver                              # static pod running?\n$ journalctl -u rke2-server -n 100 --no-pager"
+        },
+        {
+          "label": "Two failures that look identical from kubectl",
+          "lang": "log",
+          "code": "# etcd quorum loss\netcdserver: no leader\nrpc error: code = Unavailable desc = etcdserver: request timed out\n\n# expired certificates\nx509: certificate has expired or is not yet valid:\n  current time 2027-05-03T09:14:03Z is after 2027-05-02T11:22:41Z",
+          "note": "Both give you 'the connection to the server was refused' at the kubectl end. The server-side logs distinguish them in one line."
+        },
+        {
+          "label": "Decision shortcut",
+          "lang": "text",
+          "code": "kubectl times out          -> LB / network / apiserver process\nkubectl 401 or 403         -> apiserver is HEALTHY; this is auth, not an outage\nkubectl slow, random 500s  -> etcd latency or a failing admission webhook\nwrites fail, reads work    -> etcd quorum lost\neverything fails post-reboot -> certificates"
+        }
+      ],
+      "items": [
+        {
+          "id": "triage-order",
+          "type": "order",
+          "prompt": "Order a top-down triage of an unresponsive control plane.",
+          "steps": [
+            "Check reachability of the API endpoint (curl /healthz through the load balancer)",
+            "Check /readyz?verbose to see which internal check is failing",
+            "Check etcd cluster health: leader, member agreement, latency",
+            "On a server node, check the static pods with crictl",
+            "Read journalctl -u rke2-server for the supervisor's own errors"
+          ],
+          "explain": "Each step either clears a layer or localises the fault. Working top-down keeps you from restarting things that were never broken — the most common way an incident gets worse.",
+          "tag": "triage"
+        },
+        {
+          "id": "401-is-good-news",
+          "type": "mcq",
+          "prompt": "During an outage, `curl -k https://api:6443/healthz` returns 401 Unauthorized. Is that good or bad?",
+          "choices": [
+            "Good — the API server is alive and answering; you simply sent no credentials",
+            "Bad — the API server has lost its authentication configuration",
+            "Bad — the certificates have expired",
+            "Neutral — it means the load balancer answered, not the API server"
+          ],
+          "answer": 0,
+          "explain": "A 401 is a real HTTP response from a working server. That immediately clears the network path, the LB and the API server process, and points you at etcd or at authentication configuration instead.",
+          "tag": "triage"
+        },
+        {
+          "id": "writes-fail-reads-work",
+          "type": "mcq",
+          "prompt": "Reads succeed but every write returns a timeout. Which layer?",
+          "choices": [
+            "etcd has lost quorum — no leader can commit writes",
+            "RBAC is misconfigured for write verbs",
+            "The scheduler has crashed",
+            "kube-proxy rules are stale"
+          ],
+          "answer": 0,
+          "explain": "Writes need a majority to commit; reads can be served from the local member. That asymmetry is the fingerprint of quorum loss. RBAC denials would be 403s, not timeouts.",
+          "tag": "etcd"
+        },
+        {
+          "id": "keep-calm",
+          "type": "multi",
+          "prompt": "The control plane is down. Which of these are still true and worth telling stakeholders?",
+          "choices": [
+            "Running pods continue to serve traffic",
+            "Existing Service routing still works via kube-proxy rules in the kernel",
+            "Kubelets still restart crashed containers locally",
+            "Autoscaling and rescheduling continue as normal"
+          ],
+          "answers": [0, 1, 2],
+          "explain": "You lose the ability to *change* the cluster, not the cluster itself. Saying that early buys you the time to fix the control plane properly instead of rebooting nodes and turning a control-plane incident into a data-plane one.",
+          "tag": "incident"
+        }
+      ]
+    }
+  ]
+}

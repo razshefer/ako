@@ -1,0 +1,342 @@
+{
+  "id": "scheduling",
+  "title": "Scheduling and placement",
+  "summary": "Requests vs limits, taints, affinity, topology spread, priority/preemption and disruption budgets.",
+  "concepts": [
+    {
+      "id": "requests-limits",
+      "title": "Requests, limits and allocatable",
+      "brief": "**Requests** are a scheduling reservation. **Limits** are a runtime ceiling. They do completely different jobs and are enforced by different things.\n\n- `requests.cpu` — booked against the node's allocatable CPU by the scheduler; also becomes the cgroup `cpu.shares` weight under contention\n- `limits.cpu` — a cgroup quota. Exceeding it means **throttling**, not death. Latency spikes with no OOM and no restarts.\n- `requests.memory` — booked for scheduling\n- `limits.memory` — a hard cgroup ceiling. Exceeding it means the kernel kills the process: `OOMKilled`, exit 137.\n\n**Allocatable ≠ capacity**. The kubelet subtracts `kubeReserved`, `systemReserved` and the eviction threshold. A 16 GB node might advertise ~14.5 GB allocatable.\n\nBecause scheduling uses requests only, a cluster where requests are far below real usage is **overcommitted** — it looks fine in `kubectl describe node` right up until a node melts.",
+      "examples": [
+        {
+          "label": "Capacity vs allocatable vs booked",
+          "lang": "bash",
+          "code": "$ kubectl describe node node2 | grep -A7 'Allocatable:'\nAllocatable:\n  cpu:                7910m\n  memory:             15205Mi\n  pods:               110\n\n$ kubectl describe node node2 | grep -A6 'Allocated resources:'\nAllocated resources:\n  Resource   Requests      Limits\n  cpu        3200m (40%)   12 (151%)      # limits may exceed capacity - that is overcommit\n  memory     6Gi (40%)     18Gi (118%)",
+          "note": "Requests percentages are what the scheduler sees. Limits over 100% are legal and common — and are the reason a node can be evicting pods while looking 40% booked."
+        },
+        {
+          "label": "CPU throttling has no obvious symptom",
+          "lang": "bash",
+          "code": "# no restarts, no events, just slow\n$ kubectl exec api-7c9d -- cat /sys/fs/cgroup/cpu.stat\nnr_periods 18422\nnr_throttled 9137          # throttled half the time\nthrottled_usec 42119883",
+          "note": "A container with `limits.cpu: 100m` gets 10ms of CPU per 100ms period. A short burst of work is chopped into pieces — p99 latency goes through the roof while average CPU usage looks tiny."
+        },
+        {
+          "label": "The two failure signatures",
+          "lang": "text",
+          "code": "memory limit exceeded  -> SIGKILL by cgroup   -> OOMKilled, exit 137, restart count climbs\ncpu limit exceeded     -> throttled by quota  -> no event, no restart, just latency\nnode memory exhausted  -> kubelet eviction    -> pod Evicted, rescheduled elsewhere"
+        }
+      ],
+      "items": [
+        {
+          "id": "cpu-vs-mem-limits",
+          "type": "mcq",
+          "prompt": "A container exceeds its CPU limit. What happens?",
+          "choices": [
+            "It is throttled by the cgroup quota — slower, but not killed",
+            "It is OOMKilled with exit code 137",
+            "The kubelet evicts the pod",
+            "The scheduler moves it to a bigger node"
+          ],
+          "answer": 0,
+          "explain": "CPU is compressible, memory is not. That asymmetry is why aggressive CPU limits cause invisible latency problems, while aggressive memory limits cause loud crashes. Many teams set memory limits and skip CPU limits deliberately for this reason.",
+          "tag": "core idea"
+        },
+        {
+          "id": "allocatable",
+          "type": "mcq",
+          "prompt": "A node has 16 GB of RAM but reports 15205Mi allocatable. Where did the rest go?",
+          "choices": [
+            "kubeReserved + systemReserved + the hard eviction threshold",
+            "The CNI plugin reserves it for pod networking",
+            "Rounding in kubectl output",
+            "etcd reserves memory on every node"
+          ],
+          "answer": 0,
+          "explain": "Allocatable = capacity − kubeReserved − systemReserved − evictionHard. Those reservations keep sshd, the kubelet and containerd alive when pods try to eat everything. Setting them to zero is how you get unrecoverable nodes.",
+          "tag": "capacity"
+        },
+        {
+          "id": "overcommit-scenario",
+          "type": "mcq",
+          "prompt": "`kubectl describe node` shows memory requests at 40% but the node keeps evicting pods. Why?",
+          "choices": [
+            "Actual usage far exceeds requests — the scheduler books requests, the kubelet evicts on real usage",
+            "The scheduler is not counting DaemonSet pods",
+            "The eviction threshold is misconfigured to 40%",
+            "Requests are counted per-namespace, not per-node"
+          ],
+          "answer": 0,
+          "explain": "The gap between requested and real consumption is invisible to the scheduler and very visible to the kernel. Fix the requests (VPA in recommend mode is good for finding honest numbers), not the eviction thresholds.",
+          "tag": "debugging"
+        },
+        {
+          "id": "limits-match",
+          "type": "match",
+          "prompt": "Match each symptom to its cause.",
+          "pairs": [
+            ["Exit code 137, OOMKilled", "Container exceeded its memory limit"],
+            ["High p99 latency, low CPU usage, no restarts", "CPU limit throttling"],
+            ["Pod Evicted, node had MemoryPressure", "Node ran out of memory, pod ranked low by QoS"],
+            ["Pod Pending, Insufficient memory", "No node has enough unbooked memory requests"]
+          ],
+          "explain": "Four different problems that all look like 'memory issues' in a ticket. The distinguishing evidence is the pod status, the exit code, and whether the node itself was under pressure."
+        },
+        {
+          "id": "qos-guaranteed-fill",
+          "type": "fill",
+          "prompt": "You want a pod to be evicted last under node memory pressure. What must be true of every container's requests and limits?",
+          "accept": [
+            "requests equal limits",
+            "requests == limits",
+            "requests = limits",
+            "they must be equal",
+            "equal"
+          ],
+          "placeholder": "condition",
+          "explain": "Equal requests and limits for both CPU and memory on every container ⇒ QoS class Guaranteed ⇒ last in the eviction queue."
+        }
+      ]
+    },
+    {
+      "id": "taints",
+      "title": "Taints and tolerations",
+      "brief": "A **taint** is on a node and repels pods. A **toleration** is on a pod and lets it ignore a specific taint. Tolerating a taint permits placement; it does not require it.\n\nThree effects:\n\n- `NoSchedule` — no new pods without a toleration; existing pods stay\n- `PreferNoSchedule` — a soft version; the scheduler avoids it if it can\n- `NoExecute` — existing pods without a toleration are **evicted**\n\nThe control plane uses these constantly: RKE2 control-plane nodes carry `node-role.kubernetes.io/control-plane:NoSchedule`, and the node controller applies `node.kubernetes.io/unreachable:NoExecute` when a node stops answering.\n\n`kubectl cordon` adds `node.kubernetes.io/unschedulable:NoSchedule`. `kubectl drain` cordons *and* evicts, respecting PodDisruptionBudgets.",
+      "examples": [
+        {
+          "label": "Dedicating nodes to a workload",
+          "lang": "bash",
+          "code": "$ kubectl taint nodes gpu-1 workload=gpu:NoSchedule\nnode/gpu-1 tainted",
+          "note": "This keeps *other* pods off gpu-1. It does not attract GPU pods there — pair it with a nodeSelector or nodeAffinity, or your GPU workload will happily land on a normal node."
+        },
+        {
+          "label": "The matching toleration",
+          "lang": "yaml",
+          "code": "spec:\n  tolerations:\n  - key: workload\n    operator: Equal\n    value: gpu\n    effect: NoSchedule\n  nodeSelector:\n    workload: gpu          # the 'attract' half\n\n  # tolerate everything (DaemonSet style)\n  # - operator: Exists",
+          "note": "`operator: Exists` with no key tolerates every taint, which is why DaemonSets like the CNI and kube-proxy run on cordoned and NotReady nodes."
+        },
+        {
+          "label": "Faster failover for one workload",
+          "lang": "yaml",
+          "code": "spec:\n  tolerations:\n  - key: node.kubernetes.io/unreachable\n    operator: Exists\n    effect: NoExecute\n    tolerationSeconds: 30      # default is 300",
+          "note": "Trade-off: quicker recovery from real node loss, more churn on brief network blips."
+        }
+      ],
+      "items": [
+        {
+          "id": "taint-direction",
+          "type": "mcq",
+          "prompt": "You taint `gpu-1` with `workload=gpu:NoSchedule` and add the matching toleration to your ML pods. Where do they land?",
+          "choices": [
+            "Anywhere — the toleration permits gpu-1 but does not steer them there",
+            "Only on gpu-1",
+            "Nowhere until you also drain the other nodes",
+            "On gpu-1 first, other nodes only when it is full"
+          ],
+          "answer": 0,
+          "explain": "Taints repel, they do not attract. You need `nodeSelector` or `nodeAffinity` for the pull. Forgetting the second half is the most common taint mistake.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "noexecute",
+          "type": "mcq",
+          "prompt": "Which taint effect evicts pods that are *already running* on the node?",
+          "choices": ["NoExecute", "NoSchedule", "PreferNoSchedule", "Unschedulable"],
+          "answer": 0,
+          "explain": "`NoExecute` is the only one that touches running pods. It is also how node failure handling works: the node controller adds `node.kubernetes.io/unreachable:NoExecute` and the default 300s toleration acts as the eviction timer.",
+          "tag": "effects"
+        },
+        {
+          "id": "cordon-vs-drain",
+          "type": "mcq",
+          "prompt": "Difference between `kubectl cordon node3` and `kubectl drain node3`?",
+          "choices": [
+            "cordon only stops new pods landing; drain also evicts the existing ones, honouring PodDisruptionBudgets",
+            "cordon evicts pods, drain also removes the node object",
+            "They are aliases",
+            "drain stops new pods; cordon deletes them immediately"
+          ],
+          "answer": 0,
+          "explain": "cordon = `unschedulable:NoSchedule`. drain = cordon + Eviction API calls for each pod. Drain uses the *eviction* endpoint, which is what makes PDBs apply — deleting pods directly bypasses them entirely.",
+          "tag": "operations"
+        },
+        {
+          "id": "daemonset-toleration",
+          "type": "mcq",
+          "prompt": "Why does the CNI DaemonSet still run on a node that is cordoned and NotReady?",
+          "choices": [
+            "DaemonSet pods are given broad tolerations (often `operator: Exists`) so infrastructure keeps running",
+            "DaemonSets bypass the scheduler entirely and ignore all taints unconditionally",
+            "Cordon does not apply to kube-system",
+            "The kubelet exempts DaemonSets from taints"
+          ],
+          "answer": 0,
+          "explain": "Since 1.12 DaemonSet pods go through the normal scheduler, but the controller adds tolerations for unschedulable, not-ready, disk-pressure, memory-pressure and more. Otherwise a NotReady node could never get its networking back — a chicken-and-egg deadlock.",
+          "tag": "daemonsets"
+        }
+      ]
+    },
+    {
+      "id": "affinity",
+      "title": "Affinity and topology spread",
+      "brief": "Three tools, easy to confuse:\n\n- **nodeSelector / nodeAffinity** — pick nodes by their labels. `requiredDuringScheduling` is hard, `preferredDuringScheduling` is a weighted preference.\n- **podAffinity / podAntiAffinity** — place relative to *other pods*, evaluated within a `topologyKey` (a node label like `kubernetes.io/hostname` or `topology.kubernetes.io/zone`).\n- **topologySpreadConstraints** — the modern way to say 'spread evenly across zones/nodes', with a `maxSkew` and either `DoNotSchedule` or `ScheduleAnyway`.\n\nRequired pod anti-affinity is expensive at scale (the scheduler must compare against every existing pod in the topology domain) and brittle: with `topologyKey: kubernetes.io/hostname` and 5 replicas on a 3-node cluster, 2 pods stay Pending forever.\n\nTopology spread with `maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway` is usually what people actually want: spread if you can, run anyway if you cannot.",
+      "examples": [
+        {
+          "label": "Spread across zones, degrade gracefully",
+          "lang": "yaml",
+          "code": "spec:\n  topologySpreadConstraints:\n  - maxSkew: 1\n    topologyKey: topology.kubernetes.io/zone\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchLabels: { app: api }\n  - maxSkew: 1\n    topologyKey: kubernetes.io/hostname\n    whenUnsatisfiable: ScheduleAnyway\n    labelSelector:\n      matchLabels: { app: api }",
+          "note": "Two constraints: balance across zones, and within that, across nodes. Both soft, so a partial outage does not block deployment."
+        },
+        {
+          "label": "The anti-affinity trap",
+          "lang": "yaml",
+          "code": "# replicas: 5 on a 3-node cluster -> 2 pods Pending, forever\naffinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:\n    - topologyKey: kubernetes.io/hostname\n      labelSelector:\n        matchLabels: { app: api }",
+          "note": "`IgnoredDuringExecution` in the name is the other half of the story: the rule is only checked at scheduling time. Label a running pod so it now violates the rule and nothing happens."
+        },
+        {
+          "label": "Reading the rejection",
+          "lang": "log",
+          "code": "0/6 nodes are available:\n  3 node(s) didn't match pod anti-affinity rules,\n  2 Insufficient cpu,\n  1 node(s) had untolerated taint {node-role.kubernetes.io/control-plane: }."
+        }
+      ],
+      "items": [
+        {
+          "id": "affinity-types",
+          "type": "match",
+          "prompt": "Match the mechanism to what it constrains.",
+          "pairs": [
+            ["nodeAffinity", "Which nodes, by node labels"],
+            ["podAntiAffinity", "Keep away from pods matching a selector, within a topology"],
+            ["topologySpreadConstraints", "Even distribution across a topology, with a maxSkew"],
+            ["taints/tolerations", "Node repels pods unless they opt in"]
+          ],
+          "explain": "Affinity is about attraction to node labels or other pods; taints are about repulsion from the node side. Most placement bugs come from using only one half of a pair."
+        },
+        {
+          "id": "antiaffinity-pending",
+          "type": "mcq",
+          "prompt": "5 replicas, required podAntiAffinity with `topologyKey: kubernetes.io/hostname`, 3 worker nodes. Result?",
+          "choices": [
+            "3 pods run, 2 stay Pending indefinitely",
+            "All 5 run, 2 nodes get two pods each",
+            "The Deployment is rejected at admission",
+            "The scheduler relaxes the rule after a timeout"
+          ],
+          "answer": 0,
+          "explain": "Required means required — there is no fallback. Use `preferredDuringScheduling` with a weight, or a topology spread constraint with `ScheduleAnyway`, if you want best-effort spreading.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "ignored-during-execution",
+          "type": "mcq",
+          "prompt": "What does `IgnoredDuringExecution` mean in `requiredDuringSchedulingIgnoredDuringExecution`?",
+          "choices": [
+            "The rule is only evaluated when the pod is scheduled; later changes never evict a running pod",
+            "The rule is ignored unless the node is under pressure",
+            "The rule applies only to the first pod of a workload",
+            "The kubelet re-checks it every 30 seconds"
+          ],
+          "answer": 0,
+          "explain": "There is no `RequiredDuringExecution` yet. Relabel a node so a running pod violates its affinity and the pod stays put. Only NoExecute taints move running pods.",
+          "tag": "semantics"
+        },
+        {
+          "id": "spread-choice",
+          "type": "mcq",
+          "prompt": "You want replicas spread across three zones, but a single-zone outage must not block deploys. Best configuration?",
+          "choices": [
+            "topologySpreadConstraints with maxSkew: 1, topologyKey zone, whenUnsatisfiable: ScheduleAnyway",
+            "required podAntiAffinity on topologyKey zone",
+            "nodeSelector pinning one replica per zone",
+            "Three Deployments, one per zone, with nodeAffinity"
+          ],
+          "answer": 0,
+          "explain": "`ScheduleAnyway` makes the constraint a strong preference: balanced when possible, degraded but running during an outage. The 'three Deployments' pattern works but triples your operational surface.",
+          "tag": "design"
+        }
+      ]
+    },
+    {
+      "id": "priority-pdb",
+      "title": "Priority, preemption and PDBs",
+      "brief": "A **PriorityClass** gives pods a numeric priority. When a high-priority pod cannot be scheduled, the scheduler may **preempt** — evict lower-priority pods on a node to make room. Preemption ignores PodDisruptionBudgets (it tries to respect them, but will proceed).\n\n`preemptionPolicy: Never` gives a pod high scheduling priority in the queue without letting it evict anything.\n\nA **PodDisruptionBudget** constrains **voluntary** disruption only:\n\n- Covered: `kubectl drain`, cluster-autoscaler scale-down, anything using the Eviction API\n- Not covered: node crashes, kernel OOM kills, `kubectl delete pod`, preemption\n\nA PDB of `minAvailable: 100%` (or `maxUnavailable: 0`) on a workload will block a drain forever — the standard cause of an upgrade that hangs on node 1 of 12.",
+      "examples": [
+        {
+          "label": "Keeping a quorum during maintenance",
+          "lang": "yaml",
+          "code": "apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: api\nspec:\n  minAvailable: 2          # or: maxUnavailable: 1\n  selector:\n    matchLabels: { app: api }",
+          "note": "With 3 replicas this lets a drain take exactly one pod at a time. With 2 replicas it lets it take none — a very common self-inflicted deadlock."
+        },
+        {
+          "label": "The drain that never finishes",
+          "lang": "log",
+          "code": "$ kubectl drain node4 --ignore-daemonsets --delete-emptydir-data\nevicting pod prod/api-7c9d\nerror when evicting pods/\"api-7c9d\" -n \"prod\" (will retry after 5s):\n  Cannot evict pod as it would violate the pod's disruption budget.",
+          "note": "Check `kubectl get pdb -A` and look at ALLOWED DISRUPTIONS. Zero means the drain will retry until you fix the replica count or the budget."
+        },
+        {
+          "label": "System priority classes already exist",
+          "lang": "bash",
+          "code": "$ kubectl get priorityclass\nNAME                      VALUE        GLOBAL-DEFAULT\nsystem-cluster-critical   2000000000   false\nsystem-node-critical      2000001000   false",
+          "note": "Node-critical is what keeps CNI and kube-proxy pods alive when a node is packed. Do not create app priority classes anywhere near those numbers."
+        }
+      ],
+      "items": [
+        {
+          "id": "pdb-scope",
+          "type": "multi",
+          "prompt": "Which of these does a PodDisruptionBudget actually protect against?",
+          "choices": [
+            "kubectl drain during a node upgrade",
+            "Cluster-autoscaler removing an underused node",
+            "A node losing power",
+            "kubectl delete pod"
+          ],
+          "answers": [0, 1],
+          "explain": "PDBs constrain *voluntary* disruptions made through the Eviction API. Hardware failure obviously cannot ask permission, and a direct `delete pod` bypasses eviction entirely. PDBs are an upgrade-safety tool, not an availability guarantee.",
+          "tag": "core idea"
+        },
+        {
+          "id": "pdb-deadlock",
+          "type": "mcq",
+          "prompt": "A Deployment has 2 replicas and a PDB with `minAvailable: 2`. You drain a node hosting one of them. What happens?",
+          "choices": [
+            "The eviction is refused and the drain retries forever — allowed disruptions is 0",
+            "One pod is evicted; the PDB allows it because a replacement is pending",
+            "The drain deletes the pod after a 5-minute grace period",
+            "The PDB is ignored because the node is being drained"
+          ],
+          "answer": 0,
+          "explain": "minAvailable equal to the replica count means no disruption is ever allowed. Either scale to 3, or use `maxUnavailable: 1`. This exact pattern is the top cause of stalled cluster upgrades.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "preemption",
+          "type": "mcq",
+          "prompt": "A pod with a high PriorityClass cannot be scheduled anywhere. What does the scheduler try before giving up?",
+          "choices": [
+            "Preemption — evicting lower-priority pods on a node to make room",
+            "Requesting a new node from the cloud provider",
+            "Relaxing the pod's resource requests",
+            "Waiting for the next scheduling cycle without action"
+          ],
+          "answer": 0,
+          "explain": "Preemption picks the node where evicting the fewest/lowest-priority pods makes the pod fit, deletes them, and reserves the space with `nominatedNodeName`. Set `preemptionPolicy: Never` if you want queue priority without collateral damage.",
+          "tag": "preemption"
+        },
+        {
+          "id": "pdb-check",
+          "type": "fill",
+          "prompt": "Which column of `kubectl get pdb` tells you immediately whether a drain can proceed?",
+          "accept": [
+            "allowed disruptions",
+            "allowed-disruptions",
+            "allowed",
+            "allowed disruption",
+            "allowedisruptions"
+          ],
+          "placeholder": "column name",
+          "explain": "`ALLOWED DISRUPTIONS`. Zero means the next eviction will be refused. Checking every PDB in the cluster before a rolling node upgrade takes ten seconds and saves hours."
+        }
+      ]
+    }
+  ]
+}
