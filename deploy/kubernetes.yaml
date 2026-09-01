@@ -1,0 +1,101 @@
+# Reps on a cluster you already run.
+#
+#   1. build and push the image (see Dockerfile)
+#   2. set the image, the host, and your TLS secret below
+#   3. kubectl apply -f deploy/kubernetes.yaml
+#
+# The only hard requirement is TLS: a phone will not install a PWA for offline
+# use over plain HTTP, so the Ingress must terminate HTTPS with a certificate
+# your phone already trusts (a public CA, or your internal CA if the phone has
+# it installed).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reps
+  namespace: reps
+  labels: { app: reps }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: reps }
+  template:
+    metadata:
+      labels: { app: reps }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101          # nginx user in the alpine image
+        fsGroup: 101
+      containers:
+        - name: nginx
+          image: harbor.internal/platform/reps:1     # <-- your image
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { memory: 64Mi }               # no cpu limit: nothing to throttle
+          readinessProbe:
+            httpGet: { path: /index.html, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /index.html, port: http }
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: cache, mountPath: /var/cache/nginx }
+            - { name: run,   mountPath: /var/run }
+      volumes:
+        - { name: cache, emptyDir: {} }
+        - { name: run,   emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reps
+  namespace: reps
+spec:
+  selector: { app: reps }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: reps
+  namespace: reps
+spec:
+  maxUnavailable: 1           # not minAvailable: 2 - that would block node drains
+  selector:
+    matchLabels: { app: reps }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: reps
+  namespace: reps
+  annotations:
+    # if you use cert-manager, this is all you need for a trusted cert
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [reps.internal]          # <-- your host
+      secretName: reps-tls
+  rules:
+    - host: reps.internal             # <-- your host
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: reps
+                port: { name: http }

@@ -38,6 +38,20 @@ export function renderSettings(root) {
   appearance.appendChild(themeRow);
   screen.appendChild(appearance);
 
+  /* ---- offline install status ---- */
+  const offline = el(`<div class="card">
+    <div class="tiny" style="margin-bottom:8px">Offline install</div>
+    <div class="small muted" style="margin-bottom:10px">
+      Whether this device can run Reps with no network and no laptop.
+    </div>
+    <div class="statuslist"></div>
+    <button class="btn secondary sm" style="width:100%;margin-top:12px" type="button">Check again</button>
+  </div>`);
+  const statusList = offline.querySelector('.statuslist');
+  offline.querySelector('button').onclick = () => paintOfflineStatus(statusList);
+  paintOfflineStatus(statusList);
+  screen.appendChild(offline);
+
   /* ---- backup ---- */
   const backup = el(`<div class="card">
     <div class="tiny" style="margin-bottom:8px">Backup &amp; restore</div>
@@ -109,6 +123,65 @@ export function renderSettings(root) {
   root.appendChild(wrap);
 
   /* ---- helpers ---- */
+
+  /**
+   * Answers "is this phone actually independent yet?" on the device itself,
+   * rather than making you guess from the other end.
+   */
+  async function paintOfflineStatus(host) {
+    host.innerHTML = '<div class="small faint">checking…</div>';
+
+    const secure = window.isSecureContext;
+    const standalone = window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true;
+
+    let swState = 'unsupported';
+    if ('serviceWorker' in navigator) {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration();
+        swState = reg ? (reg.active ? 'active' : 'installing') : 'none';
+      } catch { swState = 'none'; }
+    }
+
+    let cached = 0;
+    if ('caches' in window) {
+      try {
+        for (const name of await caches.keys()) {
+          cached += (await (await caches.open(name)).keys()).length;
+        }
+      } catch { /* storage blocked */ }
+    }
+
+    const rows = [
+      [secure, secure ? 'Served securely (HTTPS or localhost)' : 'Not a secure origin — offline install is blocked here',
+        secure ? null : 'Host it over HTTPS. See DEPLOY.md.'],
+      [swState === 'active', swState === 'active' ? 'Service worker running' :
+        swState === 'installing' ? 'Service worker installing — reopen the app' :
+        swState === 'unsupported' ? 'This browser has no service worker support' : 'No service worker registered',
+        swState === 'none' && secure ? 'Reload once with a connection.' : null],
+      [cached > 0, cached > 0 ? `${cached} files cached on this device` : 'Nothing cached yet',
+        cached > 0 ? null : 'Open a session once while online.'],
+      [standalone, standalone ? 'Running as an installed app' : 'Running in the browser',
+        standalone ? null : 'Use "Add to Home Screen" for the full-screen app.'],
+    ];
+
+    const ready = secure && swState === 'active' && cached > 0;
+    host.innerHTML =
+      rows.map(([ok, label, hint]) => `
+        <div class="setrow" style="align-items:flex-start;gap:10px">
+          <span class="dot ${ok ? 'm4' : 'm2'}" style="margin-top:6px"></span>
+          <div class="grow">
+            <div style="font-weight:600;font-size:14px">${esc(label)}</div>
+            ${hint ? `<div class="small faint">${esc(hint)}</div>` : ''}
+          </div>
+        </div>`).join('') +
+      `<div class="small" style="margin-top:10px;color:${ready ? 'var(--good)' : 'var(--fg-dim)'}">
+        ${ready
+          ? 'This device can run Reps with no network. Try airplane mode.'
+          : 'Not fully offline yet — see DEPLOY.md.'}
+      </div>`;
+  }
+
   function numRow(title, hint, key, min, max) {
     const row = el(`<div class="setrow">
       <div class="grow"><div style="font-weight:650">${esc(title)}</div>
