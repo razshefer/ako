@@ -1,11 +1,10 @@
 import { el, esc, md, codeBlock, pct, relDay } from '../util.js';
 import { content, itemsOfUnit, itemsOfPack } from '../content.js';
-import { state, setActivePack } from '../store.js';
+import { state, setActivePack, flowState } from '../store.js';
 import { stats, groupMastery, masteryLevel, isNew, itemMastery, LEVELS, MAX_BOX } from '../srs.js';
 import { bar, levelDot } from '../components/bits.js';
 import { icons } from '../components/icons.js';
-import { flowRow, howItWorksHTML } from './home.js';
-import { flowState } from '../store.js';
+import { flowRow } from './home.js';
 
 function shell(title, backHash) {
   const wrap = el(`<div class="fade">

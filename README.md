@@ -104,6 +104,17 @@ See [AUTHORING.md](AUTHORING.md). Short version: copy a unit file, edit the
 JSON, register the pack in `content/packs.json`, run `python tools/validate.py`.
 No rebuild — reload the page.
 
+## Working on the code
+
+| Doc | For |
+|---|---|
+| [CLAUDE.md](CLAUDE.md) | Start here. Constraints, house rules, the verify loop. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it fits together, and the traps that cost time. |
+| [docs/DATA-MODEL.md](docs/DATA-MODEL.md) | Runtime shapes, the id scheme, the SRS record. |
+| [docs/RECIPES.md](docs/RECIPES.md) | Step-by-step for common changes. |
+| [AUTHORING.md](AUTHORING.md) | Writing content: exercises, walkthroughs, glossary. |
+| [DEPLOY.md](DEPLOY.md) | Hosting it so your phone does not need a laptop. |
+
 ## Walkthroughs
 
 A walkthrough is an ordered trace through one real sequence. Each step names the

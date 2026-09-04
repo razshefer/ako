@@ -3,7 +3,7 @@
 
 import { el, esc, md, mdInline, codeBlock, pct, haptic, shuffle } from '../util.js';
 import { content } from '../content.js';
-import { state, answerFlowStep, completeFlow, flowState, addSessionTime } from '../store.js';
+import { answerFlowStep, completeFlow, flowState, addSessionTime } from '../store.js';
 import { glossify, setConceptOpener } from '../glossary.js';
 import { icons } from '../components/icons.js';
 import { conceptSheet } from '../components/conceptsheet.js';
