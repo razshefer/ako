@@ -98,8 +98,9 @@ export function renderSession(root, opts) {
     const ex = createExercise(item, () => { checkBtn.disabled = !ex.ready(); });
 
     // put the concept chip in the exercise's own kicker row rather than a second line
+    const seenBefore = run.attemptsOn(item.id);
     const chips = `<span class="chip">${esc(concept ? concept.title : '')}</span>` +
-      (run.retried.has(item.id) ? '<span class="chip bad">second look</span>' : '');
+      (seenBefore ? `<span class="chip bad">attempt ${seenBefore + 1}</span>` : '');
     const kicker = ex.node.querySelector('.q-kicker');
     if (kicker) kicker.insertAdjacentHTML('afterbegin', chips);
     else ex.node.insertAdjacentHTML('afterbegin', `<div class="q-kicker">${chips}</div>`);
@@ -133,11 +134,11 @@ export function renderSession(root, opts) {
       const res = run.submit(correct);
       haptic(correct ? 14 : 40);
       play(correct ? (res.firstTry ? 'correct' : 'correctAgain') : 'wrong');
-      showVerdict(item, correct, answerHTML, res.requeued);
+      showVerdict(item, correct, answerHTML, res);
     }
   }
 
-  function showVerdict(item, correct, answerHTML, requeued) {
+  function showVerdict(item, correct, answerHTML, res = {}) {
     foot.className = `sess-foot ${correct ? 'ok' : 'no'}`;
     foot.innerHTML = '';
     const concept = content.byConcept.get(item.conceptId);
@@ -149,7 +150,9 @@ export function renderSession(root, opts) {
       <div class="explain">
         ${answerHTML ? `<span class="answer-was">${answerHTML}</span>` : ''}
         ${md(item.explain || '')}
-        ${requeued ? '<p class="small faint">You will see this one again before the end.</p>' : ''}
+        ${res.requeued
+          ? `<p class="small faint">Coming back in ${res.comesBackIn} question${res.comesBackIn === 1 ? '' : 's'}.</p>`
+          : ''}
       </div>
     </div>`);
     const btns = el('<div class="btn-row"></div>');

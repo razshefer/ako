@@ -1,7 +1,7 @@
 import { el, esc, pct } from '../util.js';
 import { content, itemsOfUnit, itemsOfPack } from '../content.js';
-import { state, streak, todayStats, totalXP, setActivePack, flowState, dismissIntro } from '../store.js';
-import { stats, groupMastery, masteryLevel, isNew } from '../srs.js';
+import { state, streak, todayStats, setActivePack, flowState, dismissIntro } from '../store.js';
+import { stats, masteryLevel, isNew } from '../srs.js';
 import { unitUnlocked, currentUnit, buildQueue } from '../session.js';
 import { ring, bar, stat, levelDot } from '../components/bits.js';
 import { icons } from '../components/icons.js';
@@ -22,7 +22,7 @@ export function renderHome(root) {
       <h1>Ako</h1>
       <div class="spacer"></div>
       <span class="chip gold">${icons.flame}${s.current}</span>
-      <span class="chip accent">${icons.bolt}${totalXP()}</span>
+      ${st.seen ? `<span class="chip accent">${pct(st.recall)}% recall</span>` : ''}
     </div>
     <div class="screen"></div>
   </div>`);
@@ -131,9 +131,9 @@ export function renderHome(root) {
         <span style="font-size:18px">${esc(pack.emoji)}</span>
         <h3 style="font-size:16px">${esc(pack.title)}</h3>
       </div>
-      <span class="tiny">${pct(st.mastery)}% mastered</span>
+      <span class="tiny">${pct(st.recall)}% recall</span>
     </div>
-    ${bar(st.mastery, 'good')}
+    ${bar(st.recall, 'good')}
     <div class="small faint" style="margin-top:8px">
       Practice walks this list for you — you do not have to pick.
     </div>
@@ -142,8 +142,9 @@ export function renderHome(root) {
 
   pack.units.forEach((u, i) => {
     const items = itemsOfUnit(u.id);
-    const m = groupMastery(items, state.records);
-    const seenAny = items.some((it) => !isNew(state.records[it.id]));
+    const ust = stats(items, state.records);
+    const m = ust.recall;
+    const seenAny = ust.seen > 0;
     const unlocked = unitUnlocked(u);
     const isCur = cur && cur.id === u.id;
     const done = m >= 0.8;
@@ -152,7 +153,9 @@ export function renderHome(root) {
       <span class="grow">
         <span class="title">${esc(u.title)}</span>
         <span class="sub">
-          ${unlocked ? `${items.length} questions · ${pct(m)}%` : 'unlocks as you work through the one above'}
+          ${unlocked
+            ? (seenAny ? `${pct(m)}% recall · ${ust.seen}/${ust.total} met` : `${items.length} questions`)
+            : 'unlocks as you work through the one above'}
         </span>
       </span>
       ${levelDot(masteryLevel(m, seenAny))}
@@ -168,11 +171,11 @@ export function renderHome(root) {
     const others = el('<div class="card"><div class="tiny" style="margin-bottom:8px">Switch subject</div></div>');
     content.packs.filter((p) => p.id !== pack.id).forEach((p) => {
       const items = itemsOfPack(p.id);
-      const m = groupMastery(items, state.records);
+      const pst = stats(items, state.records);
       const row = el(`<button class="listrow" type="button">
         <span style="font-size:20px">${esc(p.emoji)}</span>
         <span class="grow"><span class="title">${esc(p.title)}</span>
-        <span class="sub">${items.length} questions · ${pct(m)}%</span></span>
+        <span class="sub">${items.length} questions · ${pct(pst.recall)}% recall</span></span>
         <span class="chev">${icons.chev}</span>
       </button>`);
       row.onclick = () => {

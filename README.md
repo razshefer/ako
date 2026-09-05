@@ -130,14 +130,21 @@ Predictions count toward your daily goal, so a walkthrough is a full session.
 
 ## How the scheduling works
 
-Each exercise has a Leitner box (0–7) and an ease factor. Answer it right and
-it moves up a box, coming back after 1, 2, 4, 9, 18, 35 or 70 days. Answer it
-wrong and it drops back, returns later in the same session, and is due again
-tomorrow.
+Each exercise carries a **stability** — roughly how many days until you would
+start forgetting it — and a **difficulty**. Reviews are scheduled to land just
+as recall begins to slip, in the family of SM-2, Anki and FSRS.
 
-A session is built from due reviews first, then a capped number of new
-exercises, interleaved. Concept mastery is the average strength of its
-exercises, which is what drives the progress bars and the weak-spots list.
+Answer something right and its stability grows, faster if you had nearly
+forgotten it and slower if the item has proven difficult; a well-known exercise
+runs out to 1, 2, 5, 10, 20, 39, 73 days. Get it wrong and stability is cut to
+days, difficulty ratchets up, and the item **comes back within the same
+session** — 4, then 7, then 11 questions later, until you get it right.
+
+That gives the progress screen a real answer to "where do I stand": **coverage**
+(how much you have met), **retention** (how much of that you still hold), and
+**recall** (the two combined — what you could produce today). Anything forgotten
+six times or more is flagged as a leech, because drilling it again is rarely the
+fix.
 
 Answer order is randomized on every view, so you cannot learn "it's the third
 one" instead of the answer.

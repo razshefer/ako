@@ -41,7 +41,7 @@ screen. That is the expected state when someone opens `index.html` from
 |---|---|
 | `main.js` | routing, the render lifecycle, boot |
 | `store.js` | persisted state, every mutation, derived stats (streak, XP, history) |
-| `srs.js` | the scheduling algorithm and all mastery maths — pure functions, no state |
+| `srs.js` | the forgetting-curve scheduler and every derived measure — pure functions, no state |
 | `content.js` | fetching and indexing packs into lookup maps |
 | `session.js` | building a practice queue and tracking a run through it |
 | `glossary.js` | term matching, DOM linking, the definition sheet |
@@ -128,10 +128,25 @@ closes both, so a real navigation still cleans up.
 | `pack` | all units regardless of lock | same as daily |
 
 `createRun(items)` wraps the queue in a small state machine: `current`, `submit`,
-`next`, `finish`. Its one behavioural rule is that a missed item is pushed to the
-back of the queue once, so a session cannot end on a wrong answer. Retries are
-tracked so they are recorded with `firstTry: false` and do not double-count
-toward the daily goal.
+`next`, `finish`.
+
+**Relearning steps** are the important part. A missed item is spliced back into
+the queue 4, then 7, then 11 questions later — not appended to the end — and
+keeps returning until answered correctly or three attempts are spent. Widening
+gaps make each return a slightly harder test than the last; answering correctly
+two questions after being shown the answer proves nothing.
+
+Two guards keep this from becoming a grind: it gives up after three attempts
+(the scheduler will bring the item back tomorrow regardless), and it will not
+requeue when fewer than two questions remain, since re-asking immediately only
+tests short-term memory.
+
+Retries are recorded with `firstTry: false`, so they earn far less stability and
+do not double-count toward the daily goal.
+
+Due items are ordered by **weakest recall first** rather than most-overdue —
+something about to be lost is worth more than something that merely passed its
+date yesterday.
 
 Unit gating (`unitUnlocked`) is a soft rule: a unit opens once **70% of the
 previous unit's items have been seen at least once**, not on mastery. It can be
@@ -235,10 +250,11 @@ These are all real bugs that happened here. Do not reintroduce them.
 
 | Feature | Files |
 |---|---|
-| Scheduling, intervals, mastery | `srs.js` |
+| Scheduling, the forgetting curve, all derived measures | `srs.js` |
+| Relearning within a session | `createRun` in `session.js` |
 | What goes into a session | `session.js` |
 | Answer widgets and checking | `components/exercise.js` |
-| Streak, XP, daily goal | `store.js` (`streak`, `totalXP`, `todayStats`) |
+| Streak, days practiced, daily goal | `store.js` (`streak`, `daysPracticed`, `todayStats`) |
 | Progress charts, weak spots | `views/progress.js` |
 | Walkthrough player | `views/flow.js` |
 | Term definitions | `glossary.js` + `content/glossary.json` |

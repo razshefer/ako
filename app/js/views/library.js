@@ -1,7 +1,7 @@
 import { el, esc, md, codeBlock, pct, relDay } from '../util.js';
 import { content, itemsOfUnit, itemsOfPack } from '../content.js';
 import { state, setActivePack, flowState } from '../store.js';
-import { stats, groupMastery, masteryLevel, isNew, itemMastery, LEVELS, MAX_BOX } from '../srs.js';
+import { stats, masteryLevel, isNew, retrievability, stabilityDays, LEVELS } from '../srs.js';
 import { bar, levelDot } from '../components/bits.js';
 import { icons } from '../components/icons.js';
 import { flowRow } from './home.js';
@@ -52,10 +52,10 @@ export function renderLibrary(root) {
         </div>
         ${active ? '<span class="chip accent">active</span>' : ''}
       </div>
-      <div style="margin-top:12px">${bar(st.mastery, 'good')}</div>
+      <div style="margin-top:12px">${bar(st.recall, 'good')}</div>
       <div class="row small faint" style="gap:10px;margin-top:8px">
         <span>${p.units.length} units</span><span>${items.length} exercises</span>
-        <span>${pct(st.mastery)}% mastered</span>
+        <span>${pct(st.recall)}% recall</span>
       </div>
       <div class="btn-row" style="margin-top:12px"></div>
     </div>`);
@@ -113,8 +113,9 @@ export function renderPack(root, packId) {
 
   pack.units.forEach((u, i) => {
     const items = itemsOfUnit(u.id);
-    const m = groupMastery(items, state.records);
-    const seen = items.filter((it) => !isNew(state.records[it.id])).length;
+    const ust = stats(items, state.records);
+    const m = ust.recall;
+    const seen = ust.seen;
     const card = el(`<button class="card" type="button" style="display:block;width:100%;text-align:left;cursor:pointer">
       <div class="row between">
         <div class="row" style="gap:10px">
@@ -148,9 +149,9 @@ export function renderUnit(root, unitId) {
 
   screen.appendChild(el(`<div class="card">
     <div class="brief small muted">${md(unit.summary || '')}</div>
-    <div style="margin-top:12px">${bar(st.mastery, st.mastery >= 0.8 ? 'good' : '')}</div>
+    <div style="margin-top:12px">${bar(st.recall, st.recall >= 0.75 ? 'good' : '')}</div>
     <div class="row small faint" style="gap:10px;margin-top:8px">
-      <span>${pct(st.mastery)}% mastered</span><span>${st.due} due</span><span>${st.new} new</span>
+      <span>${pct(st.recall)}% recall</span><span>${st.due} due</span><span>${st.new} not seen</span>
     </div>
   </div>`));
 
@@ -160,8 +161,9 @@ export function renderUnit(root, unitId) {
 
   const list = el('<div class="card" style="margin-top:14px"><div class="tiny" style="margin-bottom:4px">Concepts</div></div>');
   unit.concepts.forEach((c) => {
-    const m = groupMastery(c.items, state.records);
-    const seen = c.items.some((i) => !isNew(state.records[i.id]));
+    const cst = stats(c.items, state.records);
+    const m = cst.recall;
+    const seen = cst.seen > 0;
     const row = el(`<button class="listrow" type="button">
       ${levelDot(masteryLevel(m, seen))}
       <span class="grow">
@@ -190,7 +192,7 @@ export function renderConcept(root, conceptId) {
 
   screen.appendChild(el(`<div class="row wrap" style="gap:8px;margin-bottom:12px">
     <span class="chip">${esc(unit?.title || '')}</span>
-    <span class="chip ${st.mastery >= 0.8 ? 'good' : seen ? '' : 'accent'}">${LEVELS[masteryLevel(st.mastery, seen)]}</span>
+    <span class="chip ${st.recall >= 0.75 ? 'good' : seen ? '' : 'accent'}">${LEVELS[masteryLevel(st.recall, seen)]}</span>
     ${st.due ? `<span class="chip bad">${st.due} due</span>` : ''}
   </div>`));
 
@@ -212,10 +214,12 @@ export function renderConcept(root, conceptId) {
   const detail = el('<div class="card" style="margin-top:14px"><div class="tiny" style="margin-bottom:4px">Recall state</div></div>');
   c.items.forEach((it) => {
     const r = state.records[it.id];
-    const m = itemMastery(r);
+    const m = retrievability(r);
+    const days = stabilityDays(r);
     const label = !r || r.seen === 0
       ? 'not seen yet'
-      : `box ${r.box}/${MAX_BOX} · ${r.right}/${r.seen} right · due ${relDay(r.due)}`;
+      : `${pct(m)}% recall · good for ~${days < 1 ? '<1' : Math.round(days)}d · `
+        + `${r.right}/${r.seen} right · due ${relDay(r.due)}`;
     detail.appendChild(el(`<div class="listrow" style="cursor:default">
       <span class="dot m${masteryLevel(m, !!r && r.seen > 0)}"></span>
       <span class="grow">

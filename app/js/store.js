@@ -1,7 +1,7 @@
 // Persistent state (localStorage) + a minimal subscribe/emit bus.
 
 import { today, addDays, daysBetween } from './util.js';
-import { grade, newRecord } from './srs.js';
+import { grade, newRecord, migrateRecord } from './srs.js';
 
 const KEY = 'ako.state.v1';
 const SCHEMA = 1;
@@ -22,7 +22,7 @@ function blank() {
     settings: { ...DEFAULT_SETTINGS },
     activePack: null,
     records: {},         // itemId -> srs record
-    days: {},            // 'YYYY-MM-DD' -> { items, correct, xp, seconds }
+    days: {},            // 'YYYY-MM-DD' -> { items, correct, seconds }
     conceptSeen: {},     // conceptId -> 'YYYY-MM-DD' first time the brief was shown
     flows: {},           // flowId -> { completed, runs, lastScore }
     seenIntro: false,    // has the "how this works" card been dismissed
@@ -40,6 +40,9 @@ function load() {
     if (!raw) return blank();
     const parsed = JSON.parse(raw);
     const base = blank();
+    // records written before the forgetting-curve scheduler carry box/ease;
+    // seed stability from the old ladder rather than resetting anyone's history
+    for (const rec of Object.values(parsed.records || {})) migrateRecord(rec);
     return {
       ...base,
       ...parsed,
@@ -93,19 +96,23 @@ export function markConceptSeen(conceptId) {
   if (!state.conceptSeen[conceptId]) { state.conceptSeen[conceptId] = today(); save(); }
 }
 
-/** Record one answer. `firstTry` is false when the item was re-queued after a miss. */
-export function answer(item, correct, firstTry = true) {
+/**
+ * Record one answer.
+ * `firstTry` is false for a within-session relearning attempt — those earn far
+ * less, because getting something right moments after being told the answer is
+ * not evidence that it will still be there tomorrow.
+ */
+export function answer(item, correct, { firstTry = true } = {}) {
   const rec = state.records[item.id] || newRecord();
-  grade(rec, correct, firstTry);
+  grade(rec, correct, { firstTry });
   state.records[item.id] = rec;
 
   const k = today();
-  const d = (state.days[k] ||= { items: 0, correct: 0, xp: 0, seconds: 0 });
+  const d = (state.days[k] ||= { items: 0, correct: 0, seconds: 0 });
   if (firstTry) {
     d.items += 1;
     if (correct) d.correct += 1;
   }
-  d.xp += correct ? (firstTry ? 10 : 4) : 0;
   touch();
   return rec;
 }
@@ -115,9 +122,9 @@ export const flowState = (flowId) => state.flows[flowId] || null;
 
 /** A prediction answered inside a walkthrough counts toward the daily goal. */
 export function answerFlowStep(correct) {
-  const d = (state.days[today()] ||= { items: 0, correct: 0, xp: 0, seconds: 0 });
+  const d = (state.days[today()] ||= { items: 0, correct: 0, seconds: 0 });
   d.items += 1;
-  if (correct) { d.correct += 1; d.xp += 8; }
+  if (correct) d.correct += 1;
   touch();
 }
 
@@ -148,15 +155,17 @@ export function markStreakCelebrated() {
 }
 
 export function addSessionTime(seconds) {
-  const d = (state.days[today()] ||= { items: 0, correct: 0, xp: 0, seconds: 0 });
+  const d = (state.days[today()] ||= { items: 0, correct: 0, seconds: 0 });
   d.seconds += Math.round(seconds);
   save();
 }
 
 /* ---------- derived ---------- */
-export const todayStats = () => state.days[today()] || { items: 0, correct: 0, xp: 0, seconds: 0 };
+export const todayStats = () => state.days[today()] || { items: 0, correct: 0, seconds: 0 };
 export const goalMet = (key = today()) => (state.days[key]?.items || 0) >= state.settings.dailyGoal;
-export const totalXP = () => Object.values(state.days).reduce((a, d) => a + (d.xp || 0), 0);
+/** Days on which the goal was met — a more honest "how much have I done" than XP. */
+export const daysPracticed = () =>
+  Object.values(state.days).filter((d) => (d.items || 0) >= state.settings.dailyGoal).length;
 
 export function streak() {
   const goal = state.settings.dailyGoal;
@@ -175,7 +184,7 @@ export function streak() {
   return { current: cur, longest: Math.max(longest, cur), goal };
 }
 
-/** [{key, items, correct, xp, level}] for the last n days, oldest first. */
+/** [{key, items, correct, seconds, level}] for the last n days, oldest first. */
 export function history(n = 119) {
   const out = [];
   for (let i = n; i >= 0; i--) {
@@ -184,7 +193,7 @@ export function history(n = 119) {
     const items = d?.items || 0;
     const goal = state.settings.dailyGoal;
     const level = items === 0 ? 0 : items >= goal * 1.5 ? 4 : items >= goal ? 3 : items >= goal / 2 ? 2 : 1;
-    out.push({ key, items, correct: d?.correct || 0, xp: d?.xp || 0, seconds: d?.seconds || 0, level });
+    out.push({ key, items, correct: d?.correct || 0, seconds: d?.seconds || 0, level });
   }
   return out;
 }
@@ -194,8 +203,9 @@ export function exportJSON() { return JSON.stringify(state, null, 2); }
 
 export function importJSON(text) {
   const parsed = JSON.parse(text);
-  if (!parsed || typeof parsed !== 'object' || !parsed.records) throw new Error('Not a Ako backup file.');
+  if (!parsed || typeof parsed !== 'object' || !parsed.records) throw new Error('Not an Ako backup file.');
   const base = blank();
+  for (const rec of Object.values(parsed.records || {})) migrateRecord(rec);
   Object.assign(state, base, parsed, {
     settings: { ...base.settings, ...(parsed.settings || {}) },
   });

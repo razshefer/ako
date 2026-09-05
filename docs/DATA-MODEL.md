@@ -77,7 +77,7 @@ One `localStorage` key, `ako.state.v1`, holding:
   },
   activePack: 'k8s-architecture',
   records:     { [itemId]: record },
-  days:        { 'YYYY-MM-DD': { items, correct, xp, seconds } },
+  days:        { 'YYYY-MM-DD': { items, correct, seconds } },
   conceptSeen: { [conceptId]: 'YYYY-MM-DD' },   // first time the brief was shown
   flows:       { [flowId]: { completed, runs, lastScore } },
   seenIntro:   false,
@@ -106,52 +106,85 @@ derived from it on read, so they self-heal if a day is edited or missing:
 
 - `streak()` — walks backwards from today counting days where
   `items >= dailyGoal`. Today not being done yet does not break the streak.
-- `totalXP()` — sums `xp` across all days.
+- `daysPracticed()` — how many days ever hit the goal. Replaced XP, which
+  counted answers without meaning anything.
 - `history(n)` — the last `n` days padded with zeros, each with a `level` 0–4 for
   the heatmap.
 
 A walkthrough prediction increments `days[today].items` via `answerFlowStep()`
 but creates **no** record — walkthroughs are not scheduled.
 
-## The SRS record
+## The scheduling record
 
 One per exercise item, created lazily on first answer.
 
 ```js
 {
-  box: 0,        // 0..MAX_BOX (7) — position on the Leitner ladder
-  ease: 2.5,     // 1.3..2.8 multiplier on the interval
+  s: 4.6,        // stability: days until recall would fall to ~90%
+  d: 0.3,        // difficulty 0.05..0.95 — how hard this has proven for you
   due: 'YYYY-MM-DD',
   last: 'YYYY-MM-DD' | null,
-  seen: 0,       // total answers
-  right: 0,
-  wrong: 0,
-  lapses: 0,     // wrong answers after having reached box >= 1
+  seen: 0, right: 0, wrong: 0,
+  lapses: 0,     // times forgotten after having been learned
   streak: 0,     // consecutive correct
 }
 ```
 
-`INTERVALS = [0, 1, 2, 4, 9, 18, 35, 70]` days, indexed by box.
+### The curve
 
-`grade(rec, correct, firstTry)`:
+`R(t) = 0.9 ^ (t / s)` — recall probability `t` days after the last review.
+Stability is defined so that `R(s) = 0.9` exactly, which makes `s` directly
+readable as *"good for about this many days"*. An item is due when `R` would
+drop below 0.9, i.e. `due = last + round(s)`.
 
-- **correct** — `box + 1` (capped), ease ±0.06/−0.05, next due in
-  `INTERVALS[box]` days scaled by `ease / 2.5` for boxes above 1
-- **wrong** — ease −0.2, `box` drops to 1 (from ≥3) or 0, `lapses++`, due
-  **today** so it returns this session and again tomorrow
+### `grade(rec, correct, { firstTry })`
 
-### Derived strength
+**Correct, first try, previously seen** — stability multiplies by
+`ease x spacing x taper`:
 
-| Function | Meaning |
+| Term | Value | Why |
+|---|---|---|
+| ease | `2.6 − 1.4·d` | items that have proven hard grow slower |
+| spacing | `1 + 1.2·(1 − R)` | reviewing late, when recall had decayed, is worth more |
+| taper | `(1 + s)^−0.08` | diminishing returns so intervals do not run away |
+
+Clamped to `[1.2, 5]`. A clean on-time review roughly doubles the interval, so
+the ladder for a well-known item runs about **1 → 2.2 → 4.6 → 9.7 → 20 → 39 →
+73 → 132** days.
+
+**Correct on a relearning attempt** (`firstTry: false`) — only `×1.15`. Getting
+something right a few questions after being shown the answer is not evidence it
+will still be there tomorrow.
+
+**Wrong** — `s = min(s × 0.25, 5) × (1 − 0.4·d)`, `d += 0.15`, `lapses++`. The
+absolute cap matters: something you just failed comes back within days however
+long it had been holding. Difficulty ratchets up and only creeps back down,
+which is what eventually surfaces a leech (`lapses >= 6`).
+
+### Derived measures
+
+Three deliberately separate questions — collapsing them into one "mastery %" is
+what made the old progress screen uninformative:
+
+| Function | Question it answers |
 |---|---|
-| `itemMastery(rec)` | 0–1 for one item: 75% box position, 25% lifetime accuracy |
-| `groupMastery(items, records)` | mean item mastery — drives every progress bar |
-| `masteryLevel(m, seenAny)` | 0–4 → `LEVELS` = New / Learning / Familiar / Strong / Mastered, at 0.3 / 0.55 / 0.8 |
-| `weakness(items, records)` | ranking score from inaccuracy, lapses, overdue days and low box — drives "needs another look" |
-| `stats(items, records)` | `{ total, due, new, seen, accuracy, mastery }` for any group |
+| `coverage(items, records)` | how much of this have I ever met? |
+| `retention(items, records)` | of what I have met, how much do I still hold? |
+| `recall(items, records)` | of the whole thing, how much could I produce today? |
+| `strength(rec)` / `groupStrength` | how *durably* is this known, ignoring when it was last seen |
+| `weakness(items, records)` | ranking for "weakest right now" |
+| `stats(items, records)` | all of the above plus `due`, `new`, `seen`, `leeches`, `accuracy` |
 
-All of these take the items and the record map explicitly, so they work on any
-slice: one concept, one unit, a whole pack, or everything.
+`recall` is `coverage × retention` and is the headline number on the progress
+screen. `strength` is what the mastery dots and level names use, because it does
+not swing every time you happen to review something.
+
+### Migration
+
+`migrateRecord()` converts pre-forgetting-curve records (`box` + `ease`) by
+seeding stability from the old interval ladder and difficulty from accuracy and
+lapses, then deleting the old fields. It runs on load and on backup import, so
+no one loses history.
 
 ## Glossary
 

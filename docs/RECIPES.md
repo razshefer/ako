@@ -76,19 +76,35 @@ Only call `setSetting()` to change one — it persists and re-applies the theme.
 
 ## Change the scheduling
 
-All of it is in **`app/js/srs.js`**, and it is pure — no state, no DOM.
+All of it is in **`app/js/srs.js`**, and it is pure — no state, no DOM, so it is
+easy to test in the console.
 
-- Interval ladder → `INTERVALS` and `MAX_BOX`
-- Promotion, demotion, ease → `grade()`
-- What "mastered" means → `itemMastery()`, `masteryLevel()` thresholds
-- What surfaces in "needs another look" → `weakness()`
+- How fast intervals grow → the `ease` / `spacing` / `taper` terms in `grade()`
+- How hard a lapse hurts → the wrong branch of `grade()`
+- What counts as a leech → `LEECH_LAPSES`
+- What "Mastered" means → `masteryLevel()` thresholds
+- What surfaces in "weakest right now" → `weakness()`
 
-What goes *into* a session is a different question and lives in
-`app/js/session.js` (`buildQueue`). Changing the mix of due versus new material
-belongs there, not in `srs.js`.
+Before changing a coefficient, print the ladder — it is the fastest way to see
+whether a tweak is sane:
 
-Existing records keep their `box` and `due`, so a change to the ladder takes
-effect on the next answer rather than retroactively.
+```js
+const r = newRecord(); const out = [];
+for (let i = 0; i < 8; i++) { grade(r, true); out.push(+r.s.toFixed(1)); r.last = r.due; }
+// healthy: 1, 2.2, 4.6, 9.7, 20, 39, 73, 132
+```
+
+A trap worth knowing: an on-time review sits at `R = 0.9`, so any term built on
+`(1 − R)` alone is nearly zero exactly when it matters most. The growth has to
+work multiplicatively from an ease base, or perfect reviews never space out.
+
+Relearning inside a session is separate and lives in `createRun` in
+`app/js/session.js` (`RELEARN_GAPS`). What goes *into* a session is
+`buildQueue`, also there.
+
+Existing records keep their `s` and `due`, so a change takes effect on the next
+answer rather than retroactively. If you change the record *shape*, add a
+converter to `migrateRecord()` — it runs on load and on import.
 
 ---
 
@@ -156,7 +172,8 @@ dotted underline in each block.
 it belongs and build it from the same primitives:
 
 - `stats(items, state.records)` for any group of items
-- `groupMastery` / `masteryLevel` for strength
+- `recall` / `retention` / `coverage` for the three different "how am I doing" questions
+- `groupStrength` / `masteryLevel` for durable strength and level names
 - `bar()`, `levelDot()`, `stat()` from `components/bits.js`
 - `history(n)` from the store for anything time-series
 
