@@ -56,13 +56,30 @@ phone with real history. Ask:
 reasoning about the formula — print the ladder:
 
 ```js
-const r = newRecord(); const out = [];
-for (let i = 0; i < 8; i++) { grade(r, true); out.push(+r.s.toFixed(1)); r.last = r.due; }
-// healthy: roughly 1, 2.2, 4.6, 9.7, 20, 39, 73, 132
+const { newRecord, grade, retrievability } = await import('/app/js/srs.js');
+const { today, addDays } = await import('/app/js/util.js');
+
+const ladder = (comeBackOnTime) => {
+  const r = newRecord(); const out = [];
+  for (let i = 0; i < 8; i++) {
+    grade(r, true);
+    out.push(+r.s.toFixed(1));
+    // returning exactly when due means elapsed = s, so R = 0.9 and the
+    // spacing bonus is live. Leaving `last` alone means R = 1 and it is not.
+    if (comeBackOnTime) r.last = addDays(today(), -Math.round(r.s));
+  }
+  return out;
+};
+
+ladder(true);   // healthy: 1, 2.4, 5.7, 13.2, 29, 63, 128, 246
+ladder(false);  // baseline, no spacing bonus: 1, 2.2, 4.6, 9.7, 20, 39, 73, 132
 ```
 
-A change that makes on-time reviews worthless is easy to write and invisible
-by inspection — it has happened here before.
+Print **both**. If they come out identical, the spacing bonus is dead — and
+that is exactly the regression that is invisible by reading the formula.
+
+A change that makes on-time reviews worthless is easy to write and invisible by
+inspection — it has happened here before.
 
 **5. The traps section of docs/ARCHITECTURE.md.** Those are all real bugs from
 this codebase. Check the diff against them: `hidden` losing to `display:flex`,

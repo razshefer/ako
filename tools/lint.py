@@ -86,10 +86,19 @@ def check_absolute_paths():
         for n, line in enumerate(read(rel).splitlines(), 1):
             if pat.search(line):
                 err(f"{rel}:{n}: absolute path — breaks the subpath deploy")
+    # In JS the dangerous forms are runtime lookups, not just import specifiers:
+    # fetch('/content/…') and new URL('/sw.js', …) both work locally and 404
+    # under /ako/ on Pages.
+    js_pat = re.compile(
+        r"""(?:from|import)\s*\(?\s*['"]/(?!/)"""
+        r"""|fetch\(\s*['"`]/(?!/)"""
+        r"""|new\s+URL\(\s*['"`]/(?!/)"""
+        r"""|(?:href|src|action)\s*=\s*['"`]/(?!/)"""
+    )
     for p in js_files():
         for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            if re.search(r"""from\s+['"]/(?!/)""", line):
-                err(f"{p.relative_to(ROOT)}:{n}: absolute import — breaks the subpath deploy")
+            if js_pat.search(line):
+                err(f"{p.relative_to(ROOT)}:{n}: absolute path — breaks the subpath deploy")
 
 
 def check_shuffle_unseeded():

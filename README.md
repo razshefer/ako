@@ -137,7 +137,7 @@ as recall begins to slip, in the family of SM-2, Anki and FSRS.
 
 Answer something right and its stability grows, faster if you had nearly
 forgotten it and slower if the item has proven difficult; a well-known exercise
-runs out to 1, 2, 5, 10, 20, 39, 73 days. Get it wrong and stability is cut to
+runs out to roughly 1, 2, 6, 13, 29, 63, 128, 246 days. Get it wrong and stability is cut to
 days, difficulty ratchets up, and the item **comes back within the same
 session** — 4, then 7, then 11 questions later, until you get it right.
 
