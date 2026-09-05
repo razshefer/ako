@@ -112,7 +112,7 @@ No rebuild — reload the page.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it fits together, and the traps that cost time. |
 | [docs/DATA-MODEL.md](docs/DATA-MODEL.md) | Runtime shapes, the id scheme, the SRS record. |
 | [docs/RECIPES.md](docs/RECIPES.md) | Step-by-step for common changes. |
-| [docs/WORKFLOW.md](docs/WORKFLOW.md) | Branching, review and release. |
+| [docs/WORKFLOW.md](docs/WORKFLOW.md) | Branching, review and releasing through a PR. |
 | [AUTHORING.md](AUTHORING.md) | Writing content: exercises, walkthroughs, glossary. |
 | [DEPLOY.md](DEPLOY.md) | Hosting it so your phone does not need a laptop. |
 
