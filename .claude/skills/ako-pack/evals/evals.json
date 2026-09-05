@@ -1,0 +1,56 @@
+{
+  "skill_name": "ako-pack",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "add a terraform pack to ako",
+      "expected_output": "A proposed unit outline plus at least one walkthrough and one unit drafted as real JSON in content/terraform/, registered in packs.json, passing tools/validate.py.",
+      "files": [],
+      "assertions": [
+        "Content validates with no errors",
+        "New pack is registered in content/packs.json",
+        "At least one walkthrough was written",
+        "Walkthrough asks the reader to predict",
+        "At least one unit was drafted, not just an outline",
+        "Exercises are not all multiple choice",
+        "Most concepts carry a real artifact (examples)",
+        "Few definitional 'what is X' prompts",
+        "Glossary was extended with new vocabulary",
+        "Reported what was left out or uncertain"
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "i want to get better at linux performance debugging - the stuff you actually do when a box is slow and you're on call. can you build that as an ako pack",
+      "expected_output": "Units scoped to the stated goal (on-call triage) rather than a textbook TOC, plus a walkthrough of a real slow-box investigation and a first unit.",
+      "files": [],
+      "assertions": [
+        "Content validates with no errors",
+        "New pack is registered in content/packs.json",
+        "At least one walkthrough was written",
+        "Walkthrough asks the reader to predict",
+        "At least one unit was drafted, not just an outline",
+        "Exercises are not all multiple choice",
+        "Most concepts carry a real artifact (examples)",
+        "Few definitional 'what is X' prompts",
+        "Glossary was extended with new vocabulary",
+        "Reported what was left out or uncertain"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "write a unit about cert-manager for the k8s pack in ako",
+      "expected_output": "One new unit file added to content/k8s-architecture/units/ and registered in that pack.json, matching the voice of the existing units, validating clean.",
+      "files": [],
+      "assertions": [
+        "Content validates with no errors",
+        "A new unit was added and registered in the pack",
+        "Exercises are not all multiple choice",
+        "Most concepts carry a real artifact (examples)",
+        "Few definitional 'what is X' prompts",
+        "Glossary was extended with new vocabulary",
+        "Reported what was left out or uncertain"
+      ]
+    }
+  ]
+}

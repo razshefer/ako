@@ -2,6 +2,8 @@ import { el, esc, toast, today, clamp } from '../util.js';
 import { content } from '../content.js';
 import { state, setSetting, exportJSON, importJSON, resetProgress, DEFAULT_SETTINGS } from '../store.js';
 import { howItWorksHTML } from './home.js';
+import { preview, audioAvailable } from '../sound.js';
+import { celebrateStreak } from '../components/celebrate.js';
 
 export function renderSettings(root) {
   const wrap = el(`<div class="fade">
@@ -23,6 +25,30 @@ export function renderSettings(root) {
   practice.appendChild(numRow('New per session', 'How much brand-new material to mix in. More is used when nothing is due.', 'newPerSession', 0, 20));
   practice.appendChild(toggleRow('Guided path', 'Unlock units in order instead of mixing everything.', 'linearPath'));
   screen.appendChild(practice);
+
+  /* ---- sound ---- */
+  const sound = el('<div class="card"><div class="tiny" style="margin-bottom:4px">Sound</div></div>');
+  sound.appendChild(toggleRow('Sound effects', 'Short cues on answers, sessions and streaks.', 'sound'));
+  sound.appendChild(toggleRow('Click on every answer', 'A tick when you pick an option. Off by default.', 'tapSound'));
+  sound.appendChild(el(`<div class="small faint" style="padding:10px 0 8px">
+    ${audioAvailable()
+      ? 'Tap a cue to hear it. On iPhone these follow the silent switch.'
+      : 'This browser has no Web Audio support, so cues are silent here.'}
+  </div>`));
+  const cues = el('<div class="row wrap" style="gap:8px"></div>');
+  [['correct', 'Correct'], ['wrong', 'Wrong'], ['correctAgain', 'Second look'],
+   ['predictWrong', 'Prediction miss'], ['complete', 'Session done'],
+   ['goal', 'Daily goal'], ['streak', 'Streak'], ['mastered', 'Mastered']
+  ].forEach(([cue, label]) => {
+    const b = el(`<button class="chip" type="button">${esc(label)}</button>`);
+    b.onclick = () => preview(cue);
+    cues.appendChild(b);
+  });
+  sound.appendChild(cues);
+  const seeStreak = el('<button class="btn ghost sm" style="width:100%;margin-top:12px" type="button">Preview the streak screen</button>');
+  seeStreak.onclick = () => celebrateStreak();
+  sound.appendChild(seeStreak);
+  screen.appendChild(sound);
 
   /* ---- appearance ---- */
   const appearance = el('<div class="card"><div class="tiny" style="margin-bottom:4px">Appearance</div></div>');

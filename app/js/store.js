@@ -12,6 +12,8 @@ export const DEFAULT_SETTINGS = {
   sessionLength: 12,    // items per session
   linearPath: true,     // gate units behind the previous one
   theme: 'dark',
+  sound: true,          // feedback cues on answers, sessions and streaks
+  tapSound: false,      // a click on every choice — fine once, wearing by session ten
 };
 
 function blank() {
@@ -24,6 +26,7 @@ function blank() {
     conceptSeen: {},     // conceptId -> 'YYYY-MM-DD' first time the brief was shown
     flows: {},           // flowId -> { completed, runs, lastScore }
     seenIntro: false,    // has the "how this works" card been dismissed
+    streakCelebratedOn: null,  // 'YYYY-MM-DD' the streak screen was last shown
     createdAt: today(),
     lastOpen: today(),
   };
@@ -127,6 +130,22 @@ export function completeFlow(flowId, score) {
 }
 
 export function dismissIntro() { state.seenIntro = true; touch(); }
+
+/* ---------- the streak moment ---------- */
+
+/**
+ * True on the first session of the day that reaches the goal. Checked at the
+ * end of a session or a walkthrough, so the celebration never interrupts you
+ * mid-question.
+ */
+export function streakCelebrationDue() {
+  return goalMet() && state.streakCelebratedOn !== today();
+}
+
+export function markStreakCelebrated() {
+  state.streakCelebratedOn = today();
+  touch();
+}
 
 export function addSessionTime(seconds) {
   const d = (state.days[today()] ||= { items: 0, correct: 0, xp: 0, seconds: 0 });

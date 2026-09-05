@@ -92,6 +92,26 @@ effect on the next answer rather than retroactively.
 
 ---
 
+## Add or retune a sound
+
+All cues live in the `CUES` map in `app/js/sound.js`. A cue is a function that
+schedules notes; `note(freq, {at, dur, gain, type, slideTo})` does the work.
+
+1. Add an entry to `CUES`. Keep it under ~300ms and under `gain: 1`.
+2. Call `play('yourCue')` from the moment it belongs to.
+3. Add it to the preview list in `views/settings.js` so it can be auditioned
+   without replaying a whole session.
+
+Rules of thumb that keep this pleasant on the hundredth session: rising
+intervals read as good and falling as bad, `triangle` is warm while `square` is
+harsh, and anything that fires on *every* answer needs to be quieter than you
+think. If a cue can fire twice within a second, it is too long.
+
+To check a cue actually schedules what you meant, wrap `createOscillator` and
+log the frequencies — see the note in the sound section of ARCHITECTURE.md.
+
+---
+
 ## Add a walkthrough
 
 1. Write `content/<pack>/flows/<nn>-<slug>.json` — see the shape and the writing

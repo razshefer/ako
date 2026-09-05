@@ -3,10 +3,12 @@
 
 import { el, esc, md, mdInline, codeBlock, pct, haptic, shuffle } from '../util.js';
 import { content } from '../content.js';
-import { answerFlowStep, completeFlow, flowState, addSessionTime } from '../store.js';
+import { answerFlowStep, completeFlow, flowState, addSessionTime, streakCelebrationDue } from '../store.js';
 import { glossify, setConceptOpener } from '../glossary.js';
 import { icons } from '../components/icons.js';
 import { conceptSheet } from '../components/conceptsheet.js';
+import { play } from '../sound.js';
+import { celebrateStreak } from '../components/celebrate.js';
 
 export function renderFlow(root, flowId) {
   const flow = content.byFlow.get(flowId);
@@ -147,6 +149,7 @@ export function renderFlow(root, flowId) {
       if (correct) right += 1;
       answerFlowStep(correct);
       haptic(correct ? 14 : 40);
+      play(correct ? 'correct' : 'predictWrong');
       list.querySelectorAll('.choice').forEach((x) => {
         const i = Number(x.dataset.idx);
         x.disabled = true;
@@ -163,7 +166,7 @@ export function renderFlow(root, flowId) {
         </div>
       </div>`);
       const on = el('<button class="btn ' + (correct ? 'good' : 'danger') + '" type="button">See what actually happens</button>');
-      on.onclick = () => reveal(s, { asked: true, correct });
+      on.onclick = () => { play('reveal'); reveal(s, { asked: true, correct }); };
       verdict.appendChild(on);
       foot.appendChild(verdict);
     };
@@ -206,6 +209,7 @@ export function renderFlow(root, flowId) {
 
   /* ---------------- outro ---------------- */
   function finish() {
+    if (streakCelebrationDue()) { celebrateStreak(() => finish()); return; }
     const score = asked ? right / asked : 1;
     completeFlow(flow.id, score);
     const seconds = Math.round((Date.now() - startedAt) / 1000);
@@ -217,6 +221,7 @@ export function renderFlow(root, flowId) {
     progressBar.style.width = '100%';
     counter.textContent = '';
 
+    play('complete');
     body.appendChild(el(`<div class="summary fade">
       <div class="big">${score >= 0.8 ? '🧠' : '🔁'}</div>
       <h2>Walkthrough complete</h2>

@@ -5,6 +5,7 @@
 // `check()` also locks the widget and paints the right/wrong state.
 
 import { el, esc, md, mdInline, codeBlock, shuffle, normalizeAnswer, haptic } from '../util.js';
+import { play } from '../sound.js';
 
 const LETTERS = 'ABCDEFGH';
 
@@ -36,6 +37,7 @@ function mcq(item, onChange) {
       picked = origIdx;
       list.querySelectorAll('.choice').forEach((n) => n.classList.toggle('sel', n === b));
       haptic(8);
+      play('tap');
       onChange();
     };
     list.appendChild(b);
@@ -78,6 +80,7 @@ function multi(item, onChange) {
       b.classList.toggle('sel', picked.has(origIdx));
       b.querySelector('.mark').textContent = picked.has(origIdx) ? '✓' : '';
       haptic(8);
+      play('tap');
       onChange();
     };
     list.appendChild(b);
@@ -153,6 +156,7 @@ function order(item, onChange) {
       const at = picks.indexOf(origIdx);
       if (at >= 0) picks.splice(at, 1); else picks.push(origIdx);
       haptic(8);
+      play('tap');
       paint();
     };
     list.appendChild(b);
@@ -205,6 +209,7 @@ function match(item, onChange) {
       if (side === 'l') { clearSel('l'); selLeft = b; } else { clearSel('r'); selRight = b; }
       b.classList.add('sel');
       haptic(8);
+      play('tap');
       if (selLeft && selRight) resolve();
       onChange();
     };

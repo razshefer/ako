@@ -1,11 +1,13 @@
 import { el, esc, md, codeBlock, pct, haptic } from '../util.js';
 import { content } from '../content.js';
-import { state, markConceptSeen, streak, todayStats } from '../store.js';
+import { state, markConceptSeen, streak, todayStats, streakCelebrationDue } from '../store.js';
 import { buildQueue, createRun } from '../session.js';
 import { createExercise } from '../components/exercise.js';
 import { icons } from '../components/icons.js';
 import { glossify, setConceptOpener } from '../glossary.js';
 import { conceptSheet, closeConceptSheet } from '../components/conceptsheet.js';
+import { play } from '../sound.js';
+import { celebrateStreak } from '../components/celebrate.js';
 
 export function renderSession(root, opts) {
   const items = buildQueue(opts);
@@ -130,6 +132,7 @@ export function renderSession(root, opts) {
       const { correct, answerHTML } = ex.check();
       const res = run.submit(correct);
       haptic(correct ? 14 : 40);
+      play(correct ? (res.firstTry ? 'correct' : 'correctAgain') : 'wrong');
       showVerdict(item, correct, answerHTML, res.requeued);
     }
   }
@@ -171,6 +174,7 @@ export function renderSession(root, opts) {
   /* ---------- summary ---------- */
   function finish() {
     document.onkeydown = null;
+    if (streakCelebrationDue()) { celebrateStreak(() => finish()); return; }
     const sum = run.finish();
     const s = streak();
     const t = todayStats();
@@ -189,6 +193,7 @@ export function renderSession(root, opts) {
     const weakConcepts = [...new Set(weak.map((i) => i.conceptId))]
       .map((id) => content.byConcept.get(id)).filter(Boolean);
 
+    play(hitGoal ? 'goal' : 'complete');
     body.appendChild(el(`<div class="summary fade">
       <div class="big">${sum.accuracy >= 0.9 ? '🎯' : sum.accuracy >= 0.6 ? '💪' : '📚'}</div>
       <h2>Session complete</h2>

@@ -11,6 +11,7 @@ import { renderSettings } from './views/settings.js';
 import { renderFlow } from './views/flow.js';
 import { loadGlossary, installGlossaryHandler, glossify, setConceptOpener, closeTermSheet } from './glossary.js';
 import { closeConceptSheet } from './components/conceptsheet.js';
+import { installSoundUnlock } from './sound.js';
 
 const app = $('#app');
 const tabbar = $('#tabbar');
@@ -116,6 +117,7 @@ window.addEventListener('ako:render', () => { render(); });
 async function boot() {
   applyTheme();
   installGlossaryHandler();
+  installSoundUnlock();
   try {
     await Promise.all([loadContent(), loadGlossary()]);
   } catch (e) {

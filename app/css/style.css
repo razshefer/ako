@@ -432,6 +432,56 @@ textarea.io{
 }
 .steps-explainer li b{color:var(--fg)}
 
+/* ---------- streak celebration ---------- */
+.celebrate{
+  position:fixed; inset:0; z-index:220;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  background:var(--bg); overflow:hidden; animation:fadein .18s ease;
+}
+.celebrate-glow{
+  position:absolute; width:150vmax; height:150vmax; border-radius:50%;
+  background:radial-gradient(circle, color-mix(in srgb,var(--gold) 22%,transparent) 0%, transparent 60%);
+  animation:glowpulse 2.6s ease-in-out infinite;
+}
+@keyframes glowpulse{0%,100%{transform:scale(.85);opacity:.7}50%{transform:scale(1);opacity:1}}
+.celebrate-body{position:relative;text-align:center;padding:24px}
+.celebrate-flame{
+  font-size:84px; line-height:1; margin-bottom:2px;
+  animation:flamein .5s cubic-bezier(.2,1.4,.4,1) both;
+  filter:drop-shadow(0 6px 18px color-mix(in srgb,var(--gold) 45%,transparent));
+}
+@keyframes flamein{from{transform:scale(.3) rotate(-12deg);opacity:0}to{transform:none;opacity:1}}
+.celebrate-count{
+  font-size:76px; font-weight:800; letter-spacing:-.04em; line-height:1;
+  color:var(--gold); min-height:76px;
+}
+.celebrate-count .to{display:inline-block;animation:countpop .45s cubic-bezier(.2,1.5,.4,1) both}
+@keyframes countpop{from{transform:scale(.4) translateY(14px);opacity:0}to{transform:none;opacity:1}}
+.celebrate-label{
+  font-size:13px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--fg-faint); margin-top:6px;
+}
+.celebrate-sub{font-size:16px;color:var(--fg-dim);margin-top:14px}
+.celebrate-week{
+  display:flex; gap:10px; justify-content:center; margin-top:28px;
+  animation:fadeup .5s .35s ease both;
+}
+.cday{display:flex;flex-direction:column;align-items:center;gap:6px}
+.cday-dot{
+  width:32px;height:32px;border-radius:50%;display:grid;place-items:center;
+  background:var(--card-2); border:1.5px solid var(--line);
+  font-size:14px;font-weight:800;color:var(--accent-ink);
+}
+.cday.done .cday-dot{background:var(--gold);border-color:transparent;color:#3a2600}
+.cday.now .cday-dot{box-shadow:0 0 0 3px color-mix(in srgb,var(--gold) 35%,transparent)}
+.cday.future{opacity:.4}
+.cday-label{font-size:11px;font-weight:700;color:var(--fg-faint)}
+.celebrate-foot{
+  position:relative; width:100%; max-width:420px;
+  padding:0 20px calc(28px + env(safe-area-inset-bottom));
+  margin-top:36px;
+}
+
 /* toast */
 .toast{
   position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom));transform:translateX(-50%);

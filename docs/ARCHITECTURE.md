@@ -45,6 +45,7 @@ screen. That is the expected state when someone opens `index.html` from
 | `content.js` | fetching and indexing packs into lookup maps |
 | `session.js` | building a practice queue and tracking a run through it |
 | `glossary.js` | term matching, DOM linking, the definition sheet |
+| `sound.js` | synthesized feedback cues — no audio files anywhere |
 | `util.js` | DOM helpers, markdown-lite, code rendering, dates, shuffle |
 
 `srs.js` is deliberately pure: it takes a record and returns a record. If you
@@ -65,6 +66,7 @@ listeners. It is never asked to clean up — `render()` discards the tree.
 | `exercise.js` | the five exercise widgets; the only place answer-checking logic lives |
 | `conceptsheet.js` | full-screen concept overlay used from inside sessions and walkthroughs |
 | `bits.js` | small render helpers (progress ring, bars, mastery dots, stat tiles) |
+| `celebrate.js` | the streak-extended screen, shown once a day |
 | `icons.js` | inline SVG paths, `viewBox` only |
 
 ### Dependency rule
@@ -162,6 +164,34 @@ Three rules worth knowing before you debug a mis-link:
 Terms that are also ordinary English carry `"auto": false` — defined, but never
 auto-linked.
 
+## Sound
+
+Every cue is synthesized at play time from oscillators in `sound.js`. There are
+no audio files, which keeps the offline story trivial and means a cue is tuned
+by editing frequencies rather than re-exporting a wav.
+
+Three things worth knowing:
+
+- **Audio needs a gesture.** `installSoundUnlock()` (called from boot) resumes
+  the AudioContext on the first tap or keypress. Before that, `play()` is a
+  no-op — which is why nothing sounds on a cold page until you touch it.
+- **Notes are scheduled on the audio clock**, not with `setTimeout`. A cue's
+  `at` offsets are seconds from now; that is what keeps a four-note arpeggio
+  from swinging under load.
+- **`play()` never throws.** A broken cue must not take a session down with it.
+
+Cue design follows the feeling, not the event: rising intervals for good news,
+falling for bad, and a deliberately gentle miss sound in walkthroughs because
+predicting wrong there is the point of the exercise rather than a failure.
+
+## The streak moment
+
+`streakCelebrationDue()` is true on the first session of the day that reaches
+the daily goal, and `state.streakCelebratedOn` makes sure it fires once. Both
+`views/session.js` and `views/flow.js` check it in their `finish()` before
+drawing the summary, so it lands at the end of an activity rather than
+interrupting a question.
+
 ## Offline
 
 `sw.js` caches the app shell **cache-first** and anything under `/content/`
@@ -197,6 +227,9 @@ These are all real bugs that happened here. Do not reintroduce them.
 - **`localStorage` writes are debounced 120ms.** Reading the key immediately
   after a mutation in a test will show stale data. Wait, or read `state`.
 - **Absolute paths break the subpath deploy.** See CLAUDE.md constraint 3.
+- **New modules must be added to `SHELL` in `sw.js`.** The offline cache is an
+  explicit list; a module missing from it works online and 404s offline, which
+  is the worst kind of bug to find on a train.
 
 ## Where features live
 
@@ -211,4 +244,6 @@ These are all real bugs that happened here. Do not reintroduce them.
 | Term definitions | `glossary.js` + `content/glossary.json` |
 | Onboarding copy | `howItWorksHTML()` in `views/home.js` |
 | Offline behaviour | `sw.js`, status card in `views/settings.js` |
+| Feedback sounds | `sound.js` (the palette), call sites in `views/session.js` and `views/flow.js` |
+| The streak moment | `components/celebrate.js`, gated by `streakCelebrationDue()` in `store.js` |
 | Theming | CSS custom properties at the top of `app/css/style.css` |

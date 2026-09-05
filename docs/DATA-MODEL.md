@@ -72,6 +72,8 @@ One `localStorage` key, `ako.state.v1`, holding:
     sessionLength: 12,   // items per session
     linearPath: true,    // gate units behind the previous one
     theme: 'dark',
+    sound: true,         // feedback cues
+    tapSound: false,     // click on every choice
   },
   activePack: 'k8s-architecture',
   records:     { [itemId]: record },
@@ -79,6 +81,7 @@ One `localStorage` key, `ako.state.v1`, holding:
   conceptSeen: { [conceptId]: 'YYYY-MM-DD' },   // first time the brief was shown
   flows:       { [flowId]: { completed, runs, lastScore } },
   seenIntro:   false,
+  streakCelebratedOn: 'YYYY-MM-DD' | null,   // so the streak screen fires once a day
   createdAt:   'YYYY-MM-DD',
   lastOpen:    'YYYY-MM-DD',
 }
