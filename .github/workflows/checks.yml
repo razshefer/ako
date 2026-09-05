@@ -1,0 +1,40 @@
+name: Checks
+
+on:
+  push:
+    branches: [develop, 'feature/**', 'fix/**']
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Project invariants
+        run: python tools/lint.py
+
+      - name: Content packs
+        run: python tools/validate.py
+
+      # There is no bundler, so nothing else would catch a syntax error before
+      # it reached the phone. `node --check` parses as ESM for .mjs, so the
+      # modules are copied with that extension purely to get the right parser.
+      - name: Parse every JS module
+        run: |
+          set -e
+          mkdir -p /tmp/parse
+          for f in $(find app/js -name '*.js') sw.js; do
+            cp "$f" "/tmp/parse/$(echo "$f" | tr '/' '_').mjs"
+          done
+          fail=0
+          for m in /tmp/parse/*.mjs; do
+            node --check "$m" || { echo "::error::failed to parse $m"; fail=1; }
+          done
+          exit $fail
