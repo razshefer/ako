@@ -89,10 +89,27 @@ Before changing a coefficient, print the ladder — it is the fastest way to see
 whether a tweak is sane:
 
 ```js
-const r = newRecord(); const out = [];
-for (let i = 0; i < 8; i++) { grade(r, true); out.push(+r.s.toFixed(1)); r.last = r.due; }
-// healthy: 1, 2.2, 4.6, 9.7, 20, 39, 73, 132
+const { newRecord, grade, retrievability } = await import('/app/js/srs.js');
+const { today, addDays } = await import('/app/js/util.js');
+
+const ladder = (comeBackOnTime) => {
+  const r = newRecord(); const out = [];
+  for (let i = 0; i < 8; i++) {
+    grade(r, true);
+    out.push(+r.s.toFixed(1));
+    // returning exactly when due means elapsed = s, so R = 0.9 and the
+    // spacing bonus is live. Leaving `last` alone means R = 1 and it is not.
+    if (comeBackOnTime) r.last = addDays(today(), -Math.round(r.s));
+  }
+  return out;
+};
+
+ladder(true);   // healthy: 1, 2.4, 5.7, 13.2, 29, 63, 128, 246
+ladder(false);  // baseline, no spacing bonus: 1, 2.2, 4.6, 9.7, 20, 39, 73, 132
 ```
+
+Print **both**. If they come out identical, the spacing bonus is dead — and
+that is exactly the regression that is invisible by reading the formula.
 
 A trap worth knowing: an on-time review sits at `R = 0.9`, so any term built on
 `(1 − R)` alone is nearly zero exactly when it matters most. The growth has to
