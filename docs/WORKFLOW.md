@@ -9,7 +9,7 @@ feature/<name>  ──►  develop  ──►  main  ──►  GitHub Pages ─
 
 | Branch | What it is | Deploys? |
 |---|---|---|
-| `main` | Production. What is installed on the phone. Only ever receives merges from `develop`. | **Yes** — every push publishes |
+| `main` | Production. What is installed on the phone. Protected — only ever receives merges from `develop`, through a PR. | **Yes** — every merge publishes |
 | `develop` | Integration. Finished, reviewed features accumulate here. | No |
 | `feature/<name>` | One change. Branched from `develop`, merged back into it. | No |
 
@@ -55,15 +55,34 @@ git checkout develop && git merge --no-ff feature/sound-settings
 `--no-ff` keeps the feature visible as a unit in the history, which is what makes
 it revertable later.
 
-**5. Release when it is worth releasing**
+**5. Release through a pull request**
+
+`main` is protected by a ruleset, so it is not pushed to directly. A release is
+a PR from `develop` into `main`:
 
 ```bash
-git checkout main && git merge --no-ff develop && git push
+git push origin develop
 ```
 
-That push deploys. Batch a few features rather than releasing every one — the
-phone picks up changes silently, and a smaller number of larger releases is
-easier to reason about when something regresses.
+Then open the PR — this URL preselects the release template:
+
+```
+https://github.com/razshefer/ako/compare/main...develop?template=release.md
+```
+
+The `checks` workflow gates it. Merge with **Create a merge commit**.
+
+> **Never squash a release PR.** Squashing collapses every feature into a single
+> commit on `main`, so `main` and `develop` stop sharing history and the *next*
+> release conflicts with itself. Worth turning squash merging off entirely in
+> Settings → General → Pull Requests so the wrong button is not there to click.
+
+Merging deploys. Batch a few features rather than releasing every one — the
+phone picks up changes silently, and fewer, larger releases are easier to reason
+about when something regresses.
+
+After the merge, `main` and `develop` share history, so there is nothing to
+back-merge. That is only needed after a hotfix.
 
 ## What CI does
 
@@ -73,11 +92,13 @@ not deploy.
 
 `.github/workflows/pages.yml` runs only on `main`: validates, then publishes.
 
-## Working through GitHub PRs instead
+## Feature PRs are optional; release PRs are not
 
-Everything above works with plain merges, which is the lighter path for one
-person. If you want the PR surface — a diff to read, comments to leave, a record
-of the review — push the branch and open a PR against `develop`:
+Merging a feature into `develop` locally is fine — `develop` is not protected,
+and for one person a local `--no-ff` merge after an agent review is enough.
+
+Open a feature PR when you want the surface: a diff to read later, somewhere to
+leave notes, a record of why something was done.
 
 ```bash
 git push -u origin feature/sound-settings
@@ -87,10 +108,21 @@ git push -u origin feature/sound-settings
 forget: migration paths, orphaned content ids, new modules missing from the
 offline shell.
 
+Releases are always a PR, because `main` is protected and because that is the
+moment a gate is worth having.
+
 ## When to break the process
 
-Fixing something broken in production: branch from `main` as `fix/<name>`, merge
-to `main`, then merge `main` back into `develop` so the branches do not diverge.
+Fixing something broken in production: branch from `main` as `fix/<name>`, open
+a PR into `main`, and once it is merged, bring `main` back into `develop` so the
+branches do not diverge:
+
+```bash
+git checkout develop && git merge --no-ff origin/main && git push origin develop
+```
+
+Skipping that back-merge is how the two branches quietly drift apart and the
+next release turns into a conflict archaeology session.
 
 Content-only changes — a new pack, a new walkthrough, glossary terms — can go
 straight to `develop` on their own branch without much ceremony. The validator

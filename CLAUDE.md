@@ -34,8 +34,11 @@ git checkout develop && git pull && git checkout -b feature/<name>
 
 Before merging a feature into `develop`, have the **`ako-reviewer`** agent review
 it and address the blocking findings. Merge with `--no-ff` so a feature stays
-revertable as a unit. Releasing is a separate, deliberate `develop` → `main`
-merge — do not do it unless asked.
+revertable as a unit.
+
+`main` is protected and cannot be pushed to. **Releasing is a pull request from
+`develop` into `main`, merged with a merge commit — never squashed.** Do not
+open one unless asked; releasing is the user's call, not a tidy-up step.
 
 ## Verify loop
 
