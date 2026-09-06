@@ -48,7 +48,7 @@ open one unless asked; releasing is the user's call, not a tidy-up step.
 Always run all three before committing:
 
 ```bash
-python tools/lint.py && python tools/validate.py
+python tools/stamp.py && python tools/lint.py && python tools/validate.py
 ```
 
 ```bash
@@ -66,7 +66,12 @@ viewport (375×812) — this is a phone app first.
 
 `tools/lint.py` enforces the invariants that fail silently: a module missing
 from the service-worker shell, an absolute path that breaks the subpath deploy,
-a seeded shuffle, a theme token defined in only one theme.
+a seeded shuffle, a theme token defined in only one theme, a service worker
+whose `VERSION` no longer matches the shell it caches.
+
+`tools/stamp.py` writes that `VERSION`. **Never edit it by hand.** A browser
+installs a new worker only when `sw.js` changes byte for byte, so app changes
+that leave `VERSION` alone deploy to the web and never reach an installed phone.
 
 `tools/impact.py` is a prompt rather than a gate — it reports what your branch
 touched in the categories that bite (offline shell, saved-state shape, orphaned

@@ -40,7 +40,8 @@ screen. That is the expected state when someone opens `index.html` from
 | File | Owns |
 |---|---|
 | `main.js` | routing, the render lifecycle, boot |
-| `store.js` | persisted state, every mutation, derived stats (streak, XP, history) |
+| `store.js` | persisted state, every mutation, derived stats (streak, days practiced, history) |
+| `update.js` | service worker registration, update checks, which build is running |
 | `srs.js` | the forgetting-curve scheduler and every derived measure — pure functions, no state |
 | `content.js` | fetching and indexing packs into lookup maps |
 | `session.js` | building a practice queue and tracking a run through it |
@@ -210,8 +211,32 @@ interrupting a question.
 ## Offline
 
 `sw.js` caches the app shell **cache-first** and anything under `/content/`
-**network-first**, so edited packs appear without bumping `VERSION`. Bump
-`VERSION` (`ako-v1`) only when the shell file list changes.
+**network-first**, so edited packs appear without a new worker.
+
+**`VERSION` is generated, not written.** A browser installs a new service worker
+only when `sw.js` differs byte for byte, so any change to a cached file that
+leaves `VERSION` alone is a deploy that reaches the web and never reaches an
+installed phone — it keeps serving the copy it cached the first time. This is
+not hypothetical: the XP removal was live on Pages for two releases while the
+phone still showed XP.
+
+So `VERSION` is a hash of every file in `SHELL` plus the worker's own logic,
+written by `tools/stamp.py` and enforced by `tools/lint.py`:
+
+```bash
+python tools/stamp.py          # rewrite it to match the shell
+python tools/stamp.py --check  # what the linter runs
+```
+
+The hash normalizes CRLF to LF before hashing text, because this working tree
+holds a mix of both and CI checks everything out as LF; without that the stamp
+would differ between Windows and Actions.
+
+`app/js/update.js` owns the client half: it registers the worker, re-checks for
+a new one whenever the app returns to the foreground, and reports which build is
+running. It deliberately **does not reload on update** — that would discard a
+session mid-question — so a new build takes effect on the next launch, and the
+Settings card says so.
 
 The service worker sits at the repo root so its scope covers the whole app; it
 is registered from `main.js` via `new URL('../../sw.js', import.meta.url)`.
@@ -219,7 +244,8 @@ Moving it into `app/` would silently reduce its scope to `/app/` and break
 offline mode.
 
 Settings has an "Offline install" card that reports secure-context, service
-worker state, cached file count and standalone mode. That is the diagnostic to
+worker state, cached file count, standalone mode and the running build, with a
+"Check for update" button. That is the diagnostic to
 point someone at when "it does not work offline".
 
 ## Traps that cost time

@@ -47,8 +47,12 @@ produced several bugs that looked correct in the diff and were wrong in fact.
 Three things, in this order:
 
 ```bash
-python tools/lint.py && python tools/validate.py
+python tools/stamp.py && python tools/lint.py && python tools/validate.py
 ```
+
+`stamp.py` rewrites the service worker's `VERSION` to match the shell it caches.
+Skipping it means the change deploys and installed phones never see it — the
+linter fails if you forget, so run it before, not after.
 
 ```bash
 python tools/impact.py
@@ -67,6 +71,8 @@ content ids removed  2 exercise(s)
                      → progress for these is orphaned
 scheduler touched    app/js/srs.js
                      → print both interval ladders before merging
+service worker changed  sw.js
+                     → the phone needs a full close-and-reopen to pick this up
 ```
 
 Act on every line it prints. Then click through the screens you changed at a
