@@ -21,12 +21,31 @@ touching `app/js/`, or [AUTHORING.md](AUTHORING.md) before touching `content/`.
 5. **Content is loaded at runtime.** Adding a subject must never require a code
    change or a rebuild — only new JSON plus a line in `content/packs.json`.
 
-## Verify loop
+## Branching — read docs/WORKFLOW.md
 
-Always run both before committing:
+`feature/<name>` → `develop` → `main`. **`main` deploys to the phone on every
+push**, so never commit directly to it.
+
+Start any change with:
 
 ```bash
-python tools/validate.py
+git checkout develop && git pull && git checkout -b feature/<name>
+```
+
+Before merging a feature into `develop`, have the **`ako-reviewer`** agent review
+it and address the blocking findings. Merge with `--no-ff` so a feature stays
+revertable as a unit.
+
+`main` is protected and cannot be pushed to. **Releasing is a pull request from
+`develop` into `main`, merged with a merge commit — never squashed.** Do not
+open one unless asked; releasing is the user's call, not a tidy-up step.
+
+## Verify loop
+
+Always run all three before committing:
+
+```bash
+python tools/lint.py && python tools/validate.py
 ```
 
 ```bash
@@ -34,18 +53,24 @@ python serve.py
 ```
 
 Then exercise it in a browser at `http://localhost:8080`. There are no unit
-tests; the validator plus a manual pass through the changed screen is the bar.
-For UI work, check at a phone viewport (375×812) — this is a phone app first.
+tests and adding a framework would break the no-build constraint, so the linter,
+the validator and a manual pass **are** the bar. For UI work, check at a phone
+viewport (375×812) — this is a phone app first.
+
+`tools/lint.py` enforces the invariants that fail silently: a module missing
+from the service-worker shell, an absolute path that breaks the subpath deploy,
+a seeded shuffle, a theme token defined in only one theme.
 
 ## Layout
 
 ```
 index.html          app shell          sw.js         offline cache
 app/js/             the app            content/      the material
-app/css/style.css   all styling        tools/        validate.py, make_icons.py
+app/css/style.css   all styling        tools/        lint.py, validate.py, make_icons.py
 docs/               these notes        deploy/       self-hosting manifests
 ```
 
+Branching and review: [docs/WORKFLOW.md](docs/WORKFLOW.md).
 Full module map and responsibilities: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Runtime shapes and the id scheme: [docs/DATA-MODEL.md](docs/DATA-MODEL.md).
 Step-by-step for common changes: [docs/RECIPES.md](docs/RECIPES.md).
@@ -86,4 +111,4 @@ Pushing to `main` publishes to <https://razshefer.github.io/ako/> via
 `.github/workflows/pages.yml` (validates, then deploys). Details and
 self-hosting: [DEPLOY.md](DEPLOY.md).
 
-Do not push without being asked — it publishes.
+Do not push to `main` without being asked — it publishes to the phone.

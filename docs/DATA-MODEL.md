@@ -148,9 +148,11 @@ drop below 0.9, i.e. `due = last + round(s)`.
 | spacing | `1 + 1.2·(1 − R)` | reviewing late, when recall had decayed, is worth more |
 | taper | `(1 + s)^−0.08` | diminishing returns so intervals do not run away |
 
-Clamped to `[1.2, 5]`. A clean on-time review roughly doubles the interval, so
-the ladder for a well-known item runs about **1 → 2.2 → 4.6 → 9.7 → 20 → 39 →
-73 → 132** days.
+Clamped to `[1.2, 5]`. Returning exactly when due (`R = 0.9`) more than doubles
+the interval each time, so a well-known item runs about **1 → 2.4 → 5.7 → 13 →
+29 → 63 → 128 → 246** days — a shade more conservative than Anki's defaults.
+Reviewing early, with recall still at 1.0, grows slower: 1 → 2.2 → 4.6 → 9.7 →
+20 → 39 → 73 → 132.
 
 **Correct on a relearning attempt** (`firstTry: false`) — only `×1.15`. Getting
 something right a few questions after being shown the answer is not evidence it
