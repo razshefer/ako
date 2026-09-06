@@ -21,10 +21,13 @@ touching `app/js/`, or [AUTHORING.md](AUTHORING.md) before touching `content/`.
 5. **Content is loaded at runtime.** Adding a subject must never require a code
    change or a rebuild — only new JSON plus a line in `content/packs.json`.
 
-## Branching — read docs/WORKFLOW.md
+## Branching — the `ako-feature` skill drives this
 
-`feature/<name>` → `develop` → `main`. **`main` deploys to the phone on every
-push**, so never commit directly to it.
+Invoke **`ako-feature`** when starting, continuing or finishing any change here.
+It carries the whole procedure; what follows is the summary.
+
+`feature/<name>` → `develop` → `main`. **`main` deploys to the phone the moment
+it is merged**, so never commit directly to it.
 
 Start any change with:
 
@@ -49,6 +52,10 @@ python tools/lint.py && python tools/validate.py
 ```
 
 ```bash
+python tools/impact.py
+```
+
+```bash
 python serve.py
 ```
 
@@ -60,6 +67,10 @@ viewport (375×812) — this is a phone app first.
 `tools/lint.py` enforces the invariants that fail silently: a module missing
 from the service-worker shell, an absolute path that breaks the subpath deploy,
 a seeded shuffle, a theme token defined in only one theme.
+
+`tools/impact.py` is a prompt rather than a gate — it reports what your branch
+touched in the categories that bite (offline shell, saved-state shape, orphaned
+content ids, the scheduler) and what each one obliges you to do.
 
 ## Layout
 
