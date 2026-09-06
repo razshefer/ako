@@ -101,7 +101,7 @@ Rules:
 
 ### Days and derived stats
 
-`days` is the only history kept. Streaks, XP and the activity heatmap are all
+`days` is the only history kept. Streaks, days practiced and the heatmap are all
 derived from it on read, so they self-heal if a day is edited or missing:
 
 - `streak()` — walks backwards from today counting days where

@@ -78,6 +78,28 @@ def check_service_worker_shell():
         if asset not in sw:
             err(f"sw.js: SHELL is missing '{asset}'")
 
+    # Non-JS assets were the blind spot: the rule above only enumerated
+    # app/js/**, so an icon referenced by the manifest could sit outside SHELL
+    # and 404 offline while the linter stayed green. It did — icon-maskable-512.
+    for ref in referenced_assets():
+        if f"'./{ref}'" not in sw:
+            err(f"sw.js: SHELL is missing '{ref}', which is referenced but would 404 offline")
+
+
+def referenced_assets():
+    """Local files index.html and the manifest point at, repo-relative."""
+    out = set()
+
+    for m in re.finditer(r'(?:href|src)="\./([^"]+)"', read("index.html")):
+        out.add(m.group(1))
+
+    # manifest paths are relative to app/, where the manifest lives
+    for m in re.finditer(r'"src"\s*:\s*"\./([^"]+)"', read("app/manifest.webmanifest")):
+        out.add(f"app/{m.group(1)}")
+
+    # only things that are actually files in the repo
+    return sorted(r for r in out if (ROOT / r).is_file())
+
 
 def check_absolute_paths():
     """The app is served from a subpath (/ako/), so absolute paths break it."""
@@ -188,10 +210,37 @@ def check_settings_documented():
             warn(f"store.js: setting '{k}' has no row in the Settings screen")
 
 
+def check_sw_version_stamped():
+    """A stale VERSION means the phone never sees the deploy.
+
+    The browser installs a new worker only when sw.js changes byte for byte, so
+    shipping new app code without moving VERSION publishes to GitHub Pages and
+    reaches nobody who already has the app. That is not hypothetical: the XP
+    removal sat live for two releases while the phone kept its cached copy.
+    """
+    sys.path.insert(0, str(ROOT / "tools"))
+    import stamp
+
+    src = stamp.SW.read_text(encoding="utf-8")
+    try:
+        want, have = stamp.compute(src), stamp.current(src)
+    except SystemExit as e:
+        # a missing SHELL entry is reported by the check above; collect it here
+        # rather than letting it end the run before the later rules execute
+        err(f"sw.js: cannot compute VERSION - {e}")
+        return
+    if want != have:
+        err(
+            f"sw.js: VERSION is '{have}' but the shell hashes to '{want}' - "
+            f"installed copies would never update. Run: python tools/stamp.py"
+        )
+
+
 # ---------------------------------------------------------------- run
 
 CHECKS = [
     ("service worker shell", check_service_worker_shell),
+    ("sw version stamped", check_sw_version_stamped),
     ("relative paths", check_absolute_paths),
     ("unseeded shuffles", check_shuffle_unseeded),
     ("american spelling", check_spelling),

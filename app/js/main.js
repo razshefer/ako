@@ -12,6 +12,7 @@ import { renderFlow } from './views/flow.js';
 import { loadGlossary, installGlossaryHandler, glossify, setConceptOpener, closeTermSheet } from './glossary.js';
 import { closeConceptSheet } from './components/conceptsheet.js';
 import { installSoundUnlock } from './sound.js';
+import { installUpdates } from './update.js';
 
 const app = $('#app');
 const tabbar = $('#tabbar');
@@ -134,9 +135,7 @@ async function boot() {
   save();
   render();
 
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register(new URL('../../sw.js', import.meta.url)).catch(() => {});
-  }
+  installUpdates();
 }
 
 boot();
