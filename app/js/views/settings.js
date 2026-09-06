@@ -1,6 +1,7 @@
 import { el, esc, toast, today, clamp } from '../util.js';
 import { content } from '../content.js';
 import { state, setSetting, exportJSON, importJSON, resetProgress, DEFAULT_SETTINGS } from '../store.js';
+import { runningBuild, updatePending, checkForUpdate } from '../update.js';
 import { howItWorksHTML } from './home.js';
 import { preview, audioAvailable } from '../sound.js';
 import { celebrateStreak } from '../components/celebrate.js';
@@ -71,10 +72,29 @@ export function renderSettings(root) {
       Whether this device can run Ako with no network and no laptop.
     </div>
     <div class="statuslist"></div>
-    <button class="btn secondary sm" style="width:100%;margin-top:12px" type="button">Check again</button>
+    <div class="btn-row" style="margin-top:12px"></div>
   </div>`);
   const statusList = offline.querySelector('.statuslist');
-  offline.querySelector('button').onclick = () => paintOfflineStatus(statusList);
+  const offlineRow = offline.querySelector('.btn-row');
+
+  const recheck = el('<button class="btn secondary sm" style="flex:1" type="button">Check again</button>');
+  recheck.onclick = () => paintOfflineStatus(statusList);
+
+  // An installed phone runs its cached copy until a newer worker arrives, so
+  // "am I on the latest?" needs an answer here rather than a guess.
+  const upd = el('<button class="btn secondary sm" style="flex:1" type="button">Check for update</button>');
+  upd.onclick = async () => {
+    upd.disabled = true;
+    upd.textContent = 'Checking…';
+    await checkForUpdate();
+    // installing -> activating -> controllerchange takes a beat to settle
+    await new Promise((r) => setTimeout(r, 1200));
+    upd.disabled = false;
+    upd.textContent = 'Check for update';
+    toast(updatePending() ? 'Update ready — reopen Ako' : 'Already up to date');
+    paintOfflineStatus(statusList);
+  };
+  offlineRow.append(recheck, upd);
   paintOfflineStatus(statusList);
   screen.appendChild(offline);
 
@@ -191,6 +211,13 @@ export function renderSettings(root) {
       [standalone, standalone ? 'Running as an installed app' : 'Running in the browser',
         standalone ? null : 'Use "Add to Home Screen" for the full-screen app.'],
     ];
+
+    const build = runningBuild();
+    if (build) {
+      rows.push([!updatePending(),
+        updatePending() ? 'A newer build is installed — reopen Ako to use it' : `Running the latest build (${build})`,
+        updatePending() ? 'Close the app fully and open it again.' : null]);
+    }
 
     const ready = secure && swState === 'active' && cached > 0;
     host.innerHTML =

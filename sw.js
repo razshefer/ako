@@ -1,6 +1,11 @@
 // Offline shell for Ako. App files are cache-first; content JSON is
 // network-first so edited packs show up without bumping the version.
-const VERSION = 'ako-v1';
+//
+// VERSION is a hash of the files listed below, written by `tools/stamp.py` and
+// checked by the linter. Do not edit it by hand: a browser only installs a new
+// worker when this file changes byte for byte, so a shell that changes while
+// VERSION stays put is a deploy that never reaches an installed phone.
+const VERSION = 'ako-a304f77684';
 const SHELL = [
   './',
   './index.html',
@@ -8,6 +13,7 @@ const SHELL = [
   './app/js/main.js',
   './app/js/util.js',
   './app/js/store.js',
+  './app/js/update.js',
   './app/js/srs.js',
   './app/js/session.js',
   './app/js/content.js',
@@ -31,7 +37,13 @@ const SHELL = [
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()).catch(() => {})
+    caches.open(VERSION)
+      // `cache: 'reload'` bypasses the HTTP cache. Without it the browser can
+      // satisfy addAll from its own still-fresh copies and the new worker
+      // installs the old files under a new name.
+      .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
+      .catch(() => {})
   );
 });
 
@@ -41,6 +53,12 @@ self.addEventListener('activate', (e) => {
       .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
+});
+
+// So the app can show which build it is actually running, rather than leaving
+// "is my phone up to date?" to guesswork.
+self.addEventListener('message', (e) => {
+  if (e.data?.type === 'version') e.ports?.[0]?.postMessage({ version: VERSION });
 });
 
 self.addEventListener('fetch', (e) => {

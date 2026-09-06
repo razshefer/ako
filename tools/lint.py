@@ -188,10 +188,31 @@ def check_settings_documented():
             warn(f"store.js: setting '{k}' has no row in the Settings screen")
 
 
+def check_sw_version_stamped():
+    """A stale VERSION means the phone never sees the deploy.
+
+    The browser installs a new worker only when sw.js changes byte for byte, so
+    shipping new app code without moving VERSION publishes to GitHub Pages and
+    reaches nobody who already has the app. That is not hypothetical: the XP
+    removal sat live for two releases while the phone kept its cached copy.
+    """
+    sys.path.insert(0, str(ROOT / "tools"))
+    import stamp
+
+    src = stamp.SW.read_text(encoding="utf-8")
+    want, have = stamp.compute(src), stamp.current(src)
+    if want != have:
+        err(
+            f"sw.js: VERSION is '{have}' but the shell hashes to '{want}' - "
+            f"installed copies would never update. Run: python tools/stamp.py"
+        )
+
+
 # ---------------------------------------------------------------- run
 
 CHECKS = [
     ("service worker shell", check_service_worker_shell),
+    ("sw version stamped", check_sw_version_stamped),
     ("relative paths", check_absolute_paths),
     ("unseeded shuffles", check_shuffle_unseeded),
     ("american spelling", check_spelling),
