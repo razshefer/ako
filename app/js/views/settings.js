@@ -1,7 +1,7 @@
 import { el, esc, toast, today, clamp } from '../util.js';
 import { content } from '../content.js';
 import { state, setSetting, exportJSON, importJSON, resetProgress, DEFAULT_SETTINGS } from '../store.js';
-import { runningBuild, updatePending, checkForUpdate } from '../update.js';
+import { currentBuild, updatePending, checkForUpdate } from '../update.js';
 import { howItWorksHTML } from './home.js';
 import { preview, audioAvailable } from '../sound.js';
 import { celebrateStreak } from '../components/celebrate.js';
@@ -86,12 +86,17 @@ export function renderSettings(root) {
   upd.onclick = async () => {
     upd.disabled = true;
     upd.textContent = 'Checking…';
-    await checkForUpdate();
+    const checked = await checkForUpdate();
     // installing -> activating -> controllerchange takes a beat to settle
     await new Promise((r) => setTimeout(r, 1200));
     upd.disabled = false;
     upd.textContent = 'Check for update';
-    toast(updatePending() ? 'Update ready — reopen Ako' : 'Already up to date');
+    // Never say "up to date" on a check that did not happen - offline, or no
+    // registration at all. Saying it anyway is the failure this card exists
+    // to prevent.
+    toast(!checked ? 'Could not check — no connection'
+      : updatePending() ? 'Update installed — reopen Ako'
+      : 'No new build found');
     paintOfflineStatus(statusList);
   };
   offlineRow.append(recheck, upd);
@@ -212,11 +217,18 @@ export function renderSettings(root) {
         standalone ? null : 'Use "Add to Home Screen" for the full-screen app.'],
     ];
 
-    const build = runningBuild();
-    if (build) {
-      rows.push([!updatePending(),
-        updatePending() ? 'A newer build is installed — reopen Ako to use it' : `Running the latest build (${build})`,
-        updatePending() ? 'Close the app fully and open it again.' : null]);
+    // "running" is knowable; "latest" is not - the page cannot see the server.
+    const { controlled, build } = await currentBuild();
+    if (updatePending()) {
+      rows.push([false, 'A newer build is installed but not in use',
+        'Fully close Ako and open it again. Reloading the tab is not enough.']);
+    } else if (controlled && build) {
+      rows.push([true, `Running build ${build}`, null]);
+    } else if (controlled) {
+      // A worker from before builds were stamped: it has no version to report,
+      // which is exactly what a device stuck on the old cache looks like.
+      rows.push([false, 'Running an older worker that cannot report its build',
+        'Tap "Check for update", then fully close and reopen Ako.']);
     }
 
     const ready = secure && swState === 'active' && cached > 0;

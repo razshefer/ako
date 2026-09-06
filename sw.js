@@ -5,7 +5,7 @@
 // checked by the linter. Do not edit it by hand: a browser only installs a new
 // worker when this file changes byte for byte, so a shell that changes while
 // VERSION stays put is a deploy that never reaches an installed phone.
-const VERSION = 'ako-a304f77684';
+const VERSION = 'ako-342b033577';
 const SHELL = [
   './',
   './index.html',
@@ -33,8 +33,15 @@ const SHELL = [
   './app/manifest.webmanifest',
   './app/icons/icon-192.png',
   './app/icons/icon-512.png',
+  './app/icons/icon-maskable-512.png',
 ];
 
+// Failure here is deliberately not caught. `addAll` is atomic, so one bad
+// response writes nothing; swallowing that would let the worker activate with
+// an empty cache, delete the previous one, and leave the app with no offline
+// copy at all. Letting install reject makes the browser discard the candidate
+// and retry later, so the working cache stays in place until a whole new shell
+// has actually been fetched.
 self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(VERSION)
@@ -43,7 +50,6 @@ self.addEventListener('install', (e) => {
       // installs the old files under a new name.
       .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
       .then(() => self.skipWaiting())
-      .catch(() => {})
   );
 });
 

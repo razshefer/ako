@@ -78,6 +78,28 @@ def check_service_worker_shell():
         if asset not in sw:
             err(f"sw.js: SHELL is missing '{asset}'")
 
+    # Non-JS assets were the blind spot: the rule above only enumerated
+    # app/js/**, so an icon referenced by the manifest could sit outside SHELL
+    # and 404 offline while the linter stayed green. It did — icon-maskable-512.
+    for ref in referenced_assets():
+        if f"'./{ref}'" not in sw:
+            err(f"sw.js: SHELL is missing '{ref}', which is referenced but would 404 offline")
+
+
+def referenced_assets():
+    """Local files index.html and the manifest point at, repo-relative."""
+    out = set()
+
+    for m in re.finditer(r'(?:href|src)="\./([^"]+)"', read("index.html")):
+        out.add(m.group(1))
+
+    # manifest paths are relative to app/, where the manifest lives
+    for m in re.finditer(r'"src"\s*:\s*"\./([^"]+)"', read("app/manifest.webmanifest")):
+        out.add(f"app/{m.group(1)}")
+
+    # only things that are actually files in the repo
+    return sorted(r for r in out if (ROOT / r).is_file())
+
 
 def check_absolute_paths():
     """The app is served from a subpath (/ako/), so absolute paths break it."""
@@ -200,7 +222,13 @@ def check_sw_version_stamped():
     import stamp
 
     src = stamp.SW.read_text(encoding="utf-8")
-    want, have = stamp.compute(src), stamp.current(src)
+    try:
+        want, have = stamp.compute(src), stamp.current(src)
+    except SystemExit as e:
+        # a missing SHELL entry is reported by the check above; collect it here
+        # rather than letting it end the run before the later rules execute
+        err(f"sw.js: cannot compute VERSION - {e}")
+        return
     if want != have:
         err(
             f"sw.js: VERSION is '{have}' but the shell hashes to '{want}' - "
