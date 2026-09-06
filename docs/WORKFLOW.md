@@ -16,6 +16,9 @@ feature/<name>  ──►  develop  ──►  main  ──►  GitHub Pages ─
 > `main` rather than `master`: GitHub Pages is wired to it, and renaming would
 > break the deploy for no benefit.
 
+The **`ako-feature`** skill drives this loop step by step; this document is the
+reasoning behind it.
+
 ## The loop
 
 **1. Branch from develop**
@@ -32,6 +35,16 @@ Name it after the change, not the files. `feature/leech-surfacing`, not
 ```bash
 python tools/lint.py && python tools/validate.py
 ```
+
+Before review, also ask what the change actually touched:
+
+```bash
+python tools/impact.py
+```
+
+It reports only the categories that fail silently — a module missing from the
+offline shell, a saved-state field that disappeared, content ids that would
+orphan someone's progress, a scheduler change that needs its ladder printed.
 
 Then click through the screens you touched at a phone viewport. There is no test
 framework and adding one would break the no-build constraint, so these three

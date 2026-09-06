@@ -1,154 +1,125 @@
-# Ako
+# Ako — working notes for Claude
 
-*Māori: to teach and to learn — one word, with no distinction between the two.*
+Phone-first spaced-repetition learning app. Vanilla ES modules, JSON content,
+**no build step**. Ships with a Kubernetes/RKE2/Rancher pack.
 
-Duolingo-style drilling for technical subjects, built to be used on a phone in
-five-minute sessions. Ships with a **Kubernetes Architecture** pack written
-around RKE2 and Rancher: 157 exercises and 7 end-to-end walkthroughs.
+Read this first, then [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before
+touching `app/js/`, or [AUTHORING.md](AUTHORING.md) before touching `content/`.
 
-- **Two ways to learn.** *Practice* drills you with spaced repetition; a
-  *walkthrough* traces one real sequence end to end — a deploy, a node dying, a
-  request finding a pod — asking you to predict each step before it is revealed.
-- **Tap any underlined term** for a one-line plain-English definition, without
-  leaving the question.
-- Short daily sessions, streaks, a daily goal and XP
-- Practical first: every concept leads with real YAML, commands and log output
-- Progress per unit and per concept, with a "needs another look" list
-- Any subject can be added by dropping a folder in `content/`
-- Installable as a PWA and works offline
-- **No build step, no npm, no account, no server** — plain ES modules and JSON
+## Hard constraints — do not break these
 
-## Using it
+1. **No Node, no npm, no build step.** There is no Node on this machine. Never
+   add a bundler, a package.json, TypeScript, JSX or a dependency that needs
+   installing. Browser-native ES modules only.
+2. **No external network at runtime.** No CDN scripts, no web fonts, no
+   analytics. The app must work fully offline after install.
+3. **Relative paths only.** It is served from a subpath (`/ako/` on GitHub
+   Pages). Absolute paths like `/app/js/...` break the deploy. Use
+   `./…` in HTML/CSS and `new URL('../../x', import.meta.url)` in JS.
+4. **Local-first.** Progress lives in `localStorage` on the device and never
+   leaves it. Do not add a backend, an account, or telemetry.
+5. **Content is loaded at runtime.** Adding a subject must never require a code
+   change or a rebuild — only new JSON plus a line in `content/packs.json`.
 
-Open it and press **Practice**. There is nothing to read first — the first time a
-concept comes up you get a short explanation with real commands, then questions
-on it. The Library is reference, not homework.
+## Branching — the `ako-feature` skill drives this
 
-If you prefer seeing how things interact, start with a **walkthrough** instead.
+Invoke **`ako-feature`** when starting, continuing or finishing any change here.
+It carries the whole procedure; what follows is the summary.
 
-## Putting it on your phone
+`feature/<name>` → `develop` → `main`. **`main` deploys to the phone the moment
+it is merged**, so never commit directly to it.
 
-See **[DEPLOY.md](DEPLOY.md)**. Short version: push to GitHub and turn on Pages
-(the workflow in `.github/workflows/pages.yml` validates and publishes), then
-open the URL on your phone and *Add to Home Screen*. After that it works offline
-and does not need your laptop.
+Start any change with:
 
-## Running it locally
+```bash
+git checkout develop && git pull && git checkout -b feature/<name>
+```
 
-There is nothing to compile. You just need to serve the folder over HTTP
-(ES modules and `fetch` do not work from `file://`).
+Before merging a feature into `develop`, have the **`ako-reviewer`** agent review
+it and address the blocking findings. Merge with `--no-ff` so a feature stays
+revertable as a unit.
+
+`main` is protected and cannot be pushed to. **Releasing is a pull request from
+`develop` into `main`, merged with a merge commit — never squashed.** Do not
+open one unless asked; releasing is the user's call, not a tidy-up step.
+
+## Verify loop
+
+Always run all three before committing:
+
+```bash
+python tools/lint.py && python tools/validate.py
+```
+
+```bash
+python tools/impact.py
+```
 
 ```bash
 python serve.py
 ```
 
-That prints two URLs:
+Then exercise it in a browser at `http://localhost:8080`. There are no unit
+tests and adding a framework would break the no-build constraint, so the linter,
+the validator and a manual pass **are** the bar. For UI work, check at a phone
+viewport (375×812) — this is a phone app first.
 
-```
-this machine : http://localhost:8080/
-your phone   : http://192.168.1.42:8080/
-```
+`tools/lint.py` enforces the invariants that fail silently: a module missing
+from the service-worker shell, an absolute path that breaks the subpath deploy,
+a seeded shuffle, a theme token defined in only one theme.
 
-Open the phone URL while on the same Wi-Fi, then **Add to Home Screen**
-(Chrome: ⋮ → Add to Home screen; Safari: Share → Add to Home Screen). It
-launches full-screen with no browser chrome and keeps working offline.
-
-Any static file server works — `npx serve`, nginx, Caddy, GitHub Pages, an S3
-bucket. The app is entirely client-side.
-
-> Note: iOS only allows service-worker installs over HTTPS or `localhost`, so
-> offline mode on an iPhone needs the app hosted behind TLS. Android is happy
-> with plain HTTP on a LAN address.
-
-## Where progress lives
-
-In `localStorage`, in that browser, on that device. Nothing is uploaded
-anywhere.
-
-That means: **export a backup before clearing site data**, and if you want the
-same progress on laptop and phone, move it by hand.
-Settings → Backup & restore → *Download backup* / *Restore from box*.
+`tools/impact.py` is a prompt rather than a gate — it reports what your branch
+touched in the categories that bite (offline shell, saved-state shape, orphaned
+content ids, the scheduler) and what each one obliges you to do.
 
 ## Layout
 
 ```
-index.html              app shell
-sw.js                   service worker (offline cache)
-serve.py                dev server, prints a LAN URL for your phone
-app/
-  css/style.css
-  js/
-    main.js             router + boot
-    store.js            persisted state (localStorage)
-    srs.js              spaced repetition: boxes, intervals, mastery
-    session.js          queue building and the run state machine
-    content.js          loads and indexes content packs
-    glossary.js         tap-to-define terms
-    components/         exercise widgets, concept overlay, icons, helpers
-    views/              home, session, flow, progress, library, settings
-content/
-  packs.json            list of installed packs
-  glossary.json         term -> one-line definition
-  k8s-architecture/
-    pack.json           title, emoji, unit and walkthrough order
-    units/*.json        concepts + exercises
-    flows/*.json        walkthroughs
-tools/
-  validate.py           check content before committing
-  make_icons.py         regenerate the PWA icons
+index.html          app shell          sw.js         offline cache
+app/js/             the app            content/      the material
+app/css/style.css   all styling        tools/        lint.py, validate.py, make_icons.py
+docs/               these notes        deploy/       self-hosting manifests
 ```
 
-## Adding a subject
+Branching and review: [docs/WORKFLOW.md](docs/WORKFLOW.md).
+Full module map and responsibilities: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Runtime shapes and the id scheme: [docs/DATA-MODEL.md](docs/DATA-MODEL.md).
+Step-by-step for common changes: [docs/RECIPES.md](docs/RECIPES.md).
 
-See [AUTHORING.md](AUTHORING.md). Short version: copy a unit file, edit the
-JSON, register the pack in `content/packs.json`, run `python tools/validate.py`.
-No rebuild — reload the page.
+## House rules
 
-## Working on the code
+- **Never seed a shuffle.** `shuffle(arr)` must stay random per call. Answer
+  positions are deliberately unmemorizable — this was an explicit request.
+- **American spelling** throughout code and content ("practice", not
+  "practise"; "authorization", not "authorisation").
+- **Ids are progress keys.** Renaming a content id resets that item's history.
+  Reword freely; rename only when you mean to reset.
+- **Reading never costs your place.** Opening a concept or a term mid-session
+  uses an overlay (`conceptSheet`), never a route change. If you add a place
+  where explanation is reachable from a running activity, do the same.
+- **New explanatory text should be glossary-linked.** If you add a container of
+  prose, add its class to `GLOSSIFY_SELECTOR` in `app/js/glossary.js`.
+- Match the surrounding style: no semicolonless lines, single quotes, small
+  focused functions, comments only where the *why* is not obvious.
 
-| Doc | For |
-|---|---|
-| [CLAUDE.md](CLAUDE.md) | Start here. Constraints, house rules, the verify loop. |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it fits together, and the traps that cost time. |
-| [docs/DATA-MODEL.md](docs/DATA-MODEL.md) | Runtime shapes, the id scheme, the SRS record. |
-| [docs/RECIPES.md](docs/RECIPES.md) | Step-by-step for common changes. |
-| [docs/WORKFLOW.md](docs/WORKFLOW.md) | Branching, review and releasing through a PR. |
-| [AUTHORING.md](AUTHORING.md) | Writing content: exercises, walkthroughs, glossary. |
-| [DEPLOY.md](DEPLOY.md) | Hosting it so your phone does not need a laptop. |
+## Content voice
 
-## Walkthroughs
+The owner learns from real flows, not definitions. When writing or reviewing
+content:
 
-A walkthrough is an ordered trace through one real sequence. Each step names the
-actor (`kube-scheduler`, `03:14:40`, `containerd`), and most steps ask you to
-predict what happens before revealing it, with real command output attached.
+- Ask about **consequences**, not definitions. "What breaks when the API server
+  is down?" beats "What is the API server?"
+- Put a **real artifact** in the question — command output, a manifest, a log
+  line.
+- `explain` should teach something new, including the practical next step. It is
+  read at the exact moment of being wrong, so it is the highest-value text.
+- **Walkthroughs are the preferred format for a new area.** Write one before
+  writing more flashcards. See [AUTHORING.md](AUTHORING.md).
 
-The pack ships with seven: `kubectl apply` end to end, a request finding a pod,
-a rolling update and where its 502s come from, a node dying at 03:14, an RKE2
-cluster booting from nothing, losing etcd quorum, and Rancher taking over a
-cluster.
+## Deployment
 
-Predictions count toward your daily goal, so a walkthrough is a full session.
+Pushing to `main` publishes to <https://razshefer.github.io/ako/> via
+`.github/workflows/pages.yml` (validates, then deploys). Details and
+self-hosting: [DEPLOY.md](DEPLOY.md).
 
-## How the scheduling works
-
-Each exercise carries a **stability** — roughly how many days until you would
-start forgetting it — and a **difficulty**. Reviews are scheduled to land just
-as recall begins to slip, in the family of SM-2, Anki and FSRS.
-
-Answer something right and its stability grows, faster if you had nearly
-forgotten it and slower if the item has proven difficult; a well-known exercise
-runs out to roughly 1, 2, 6, 13, 29, 63, 128, 246 days. Get it wrong and stability is cut to
-days, difficulty ratchets up, and the item **comes back within the same
-session** — 4, then 7, then 11 questions later, until you get it right.
-
-That gives the progress screen a real answer to "where do I stand": **coverage**
-(how much you have met), **retention** (how much of that you still hold), and
-**recall** (the two combined — what you could produce today). Anything forgotten
-six times or more is flagged as a leech, because drilling it again is rarely the
-fix.
-
-Answer order is randomized on every view, so you cannot learn "it's the third
-one" instead of the answer.
-
-All of it is tunable in Settings: daily goal, session length, new-per-session,
-and whether units unlock in order.
+Do not push to `main` without being asked — it publishes to the phone.
