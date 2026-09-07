@@ -39,6 +39,10 @@ function lastSevenDays() {
  * preview must not mark the day as celebrated: doing so consumed the real
  * moment, so anyone who looked at the screen out of curiosity was never shown
  * it when they actually earned it that day.
+ *
+ * Pass `preview` only with a no-op `done`. A preview leaves the day unmarked,
+ * so a `done` that re-checks `streakCelebrationDue()` — which is what the
+ * session and walkthrough `finish()` do — would show the screen again forever.
  */
 export function celebrateStreak(done = () => {}, { preview = false } = {}) {
   const s = streak();
