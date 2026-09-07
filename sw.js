@@ -5,7 +5,7 @@
 // checked by the linter. Do not edit it by hand: a browser only installs a new
 // worker when this file changes byte for byte, so a shell that changes while
 // VERSION stays put is a deploy that never reaches an installed phone.
-const VERSION = 'ako-342b033577';
+const VERSION = 'ako-a9a7d28b59';
 const SHELL = [
   './',
   './index.html',
