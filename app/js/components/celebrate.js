@@ -34,12 +34,19 @@ function lastSevenDays() {
 
 /**
  * Show the celebration over whatever is on screen, then call `done`.
- * Returns false if there is nothing to celebrate, so callers can just continue.
+ *
+ * `preview` is for the Settings button, which shows the screen on demand. A
+ * preview must not mark the day as celebrated: doing so consumed the real
+ * moment, so anyone who looked at the screen out of curiosity was never shown
+ * it when they actually earned it that day.
+ *
+ * Pass `preview` only with a no-op `done`. A preview leaves the day unmarked,
+ * so a `done` that re-checks `streakCelebrationDue()` — which is what the
+ * session and walkthrough `finish()` do — would show the screen again forever.
  */
-export function celebrateStreak(done = () => {}) {
+export function celebrateStreak(done = () => {}, { preview = false } = {}) {
   const s = streak();
   const week = lastSevenDays();
-  markStreakCelebrated();
 
   const wrap = el(`<div class="celebrate">
     <div class="celebrate-glow"></div>
@@ -70,6 +77,10 @@ export function celebrateStreak(done = () => {}) {
   wrap.appendChild(foot);
 
   document.body.appendChild(wrap);
+  // Marked only once the screen is actually up, and never for a preview. If
+  // this ran before the DOM went in, a render failure would silently spend the
+  // day's celebration without anyone seeing it.
+  if (!preview) markStreakCelebrated();
   play('streak');
 
   // count ticks up a beat after the flame lands, so the two do not compete

@@ -47,7 +47,7 @@ export function renderSettings(root) {
   });
   sound.appendChild(cues);
   const seeStreak = el('<button class="btn ghost sm" style="width:100%;margin-top:12px" type="button">Preview the streak screen</button>');
-  seeStreak.onclick = () => celebrateStreak();
+  seeStreak.onclick = () => celebrateStreak(() => {}, { preview: true });
   sound.appendChild(seeStreak);
   screen.appendChild(sound);
 

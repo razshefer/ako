@@ -1,6 +1,6 @@
 import { $, el, esc } from './util.js';
 import { loadContent, content } from './content.js';
-import { state, applyTheme, save, setActivePack } from './store.js';
+import { state, applyTheme, save, setActivePack, streakCelebrationDue } from './store.js';
 import { icons } from './components/icons.js';
 
 import { renderHome } from './views/home.js';
@@ -11,6 +11,7 @@ import { renderSettings } from './views/settings.js';
 import { renderFlow } from './views/flow.js';
 import { loadGlossary, installGlossaryHandler, glossify, setConceptOpener, closeTermSheet } from './glossary.js';
 import { closeConceptSheet } from './components/conceptsheet.js';
+import { celebrateStreak } from './components/celebrate.js';
 import { installSoundUnlock } from './sound.js';
 import { installUpdates } from './update.js';
 
@@ -46,11 +47,16 @@ function renderTabs(activeHref) {
 export function render() {
   const { parts, params } = parseRoute();
   const head = parts[0] || '';
+  const inActivity = head === 'session' || head === 'flow';
 
   // any overlay belongs to the screen that opened it
   closeTermSheet();
   closeConceptSheet();
   setConceptOpener(null);
+  // the celebration is body-appended like the sheets, so it outlives #app being
+  // cleared; without this it stays pinned over whatever renders next, and a
+  // preview (which leaves the day unmarked) can stack a second copy on top
+  document.querySelectorAll('.celebrate').forEach((e) => e.remove());
 
   app.innerHTML = '';
   app.classList.remove('is-fullscreen');
@@ -110,6 +116,17 @@ export function render() {
   renderTabs(tabHref);
   glossify(app);
   window.scrollTo(0, 0);
+
+  // The streak moment belongs to the day, not to one function in two views.
+  // It used to be checked only in the session and walkthrough `finish()`, so
+  // quitting a session, closing a walkthrough or just reopening the app after
+  // reaching the goal skipped it — and skipping it lost it, because by the next
+  // day `goalMet()` is asked about the new day and the one it was owed for is
+  // gone. Checking here catches every exit, including ones added later.
+  //
+  // Not during an activity: mid-question is the one place this must not appear,
+  // and those two screens raise it themselves at the end.
+  if (!inActivity && streakCelebrationDue()) celebrateStreak();
 }
 
 window.addEventListener('hashchange', () => { render(); });
