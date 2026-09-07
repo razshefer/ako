@@ -53,6 +53,10 @@ export function render() {
   closeTermSheet();
   closeConceptSheet();
   setConceptOpener(null);
+  // the celebration is body-appended like the sheets, so it outlives #app being
+  // cleared; without this it stays pinned over whatever renders next, and a
+  // preview (which leaves the day unmarked) can stack a second copy on top
+  document.querySelectorAll('.celebrate').forEach((e) => e.remove());
 
   app.innerHTML = '';
   app.classList.remove('is-fullscreen');
