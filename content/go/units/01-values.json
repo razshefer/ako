@@ -37,22 +37,20 @@
         },
         {
           "id": "unused-import",
-          "type": "mcq",
-          "prompt": "You comment out the only line that used `os`, then run `go build`.",
-          "code": {
-            "lang": "log",
-            "label": "go build",
-            "text": "./main.go:4:2: \"os\" imported and not used"
-          },
+          "type": "multi",
+          "prompt": "An unused import is a compile error. Which of these are *also* compile errors?",
           "choices": [
-            "The build fails — an unused import is an error in Go",
-            "The build succeeds with a warning",
-            "The build succeeds; the linker drops the unused package",
-            "The build fails only with `-Werror` style strict flags"
+            "A local variable that is declared and never used",
+            "An import that is never referenced",
+            "A package-level variable that is never used",
+            "A struct field that is never read or written"
           ],
-          "answer": 0,
-          "explain": "It is a hard error, and the same is true of an unused *local variable*. The reasoning is that both are usually leftovers from an edit you did not finish. Unused package-level variables and struct fields are allowed — the rule is narrower than it first appears.",
-          "tag": "compiler"
+          "explain": "Only locals and imports. Both are nearly always leftovers from an edit you did not finish, which is the case for making them fatal. Package-level variables and struct fields are exempt, because they are routinely part of an API that nothing in this package happens to touch. `goimports` exists because the import half of the rule is otherwise relentless.",
+          "tag": "compiler",
+          "answers": [
+            0,
+            1
+          ]
         },
         {
           "id": "untyped-const",
@@ -75,11 +73,12 @@
         {
           "id": "var-keyword-fill",
           "type": "fill",
-          "prompt": "Which keyword declares a variable at package level, outside any function?",
+          "prompt": "`timeout := 30` does not compile at package level. Rewrite the whole line so it does.",
           "accept": [
-            "var"
+            "var timeout = 30",
+            "var timeout int = 30"
           ],
-          "placeholder": "keyword",
+          "placeholder": "the line",
           "explain": "`var`. Worth internalizing the set of things that can start a line at package level: `package`, `import`, `var`, `const`, `type`, `func`. Nothing else, which is why a stray `:=` there is a syntax error rather than a scoping mistake."
         }
       ]
@@ -160,22 +159,23 @@
           "explain": "Reads are fine and give you the value type's zero. `len()` returns 0, `range` iterates zero times, and `delete()` is a no-op. This asymmetry is deliberate: it makes a nil map a usable empty read-only map, so you rarely need a nil check before looking something up."
         },
         {
-          "id": "nil-set",
-          "type": "multi",
-          "prompt": "Which of these have `nil` as their zero value?",
+          "id": "struct-zero-panic",
+          "type": "mcq",
+          "prompt": "`var c Config`, and nothing else. Which line panics first?",
+          "code": {
+            "lang": "go",
+            "label": "Config has Tags []string and Limits map[string]int",
+            "text": "c.Tags = append(c.Tags, \"a\")\nc.Limits[\"x\"] = 1\nfmt.Println(len(c.Tags), len(c.Limits))"
+          },
           "choices": [
-            "A slice",
-            "A map",
-            "An interface",
-            "A string",
-            "A struct with only int fields"
+            "Line 2 — appending to a nil slice is fine, writing to a nil map is not",
+            "Line 1 — a nil slice must be made before you can append to it",
+            "Line 3 — len() of a nil map panics",
+            "None of them; both auto-create on first use"
           ],
-          "answers": [
-            0,
-            1,
-            2
-          ],
-          "explain": "Slices, maps, interfaces — plus pointers, channels and funcs. A string's zero is `\"\"`, which is why you never write `if s != nil` for a string. A struct is never nil; only a *pointer to* a struct can be."
+          "answer": 0,
+          "explain": "Line 2, and this asymmetry is worth burning in: a zero-value slice is a working empty slice, a zero-value map is a trap. So a struct of slices and scalars is usable straight from `var`, while one holding a map needs a constructor. That is the best reason there is to write `NewConfig()` instead of letting callers reach for the zero value.",
+          "tag": "panic"
         },
         {
           "id": "useful-zero",
@@ -234,20 +234,6 @@
           ],
           "placeholder": "expression",
           "explain": "`int64(n)`. Conversion syntax is `T(v)` — it reads like a function call and is one. Note it is not free of consequence: converting the other way, `int32(bigInt64)`, silently truncates rather than panicking."
-        },
-        {
-          "id": "string-int-conv",
-          "type": "mcq",
-          "prompt": "`n := 65` — what is `string(n)`?",
-          "choices": [
-            "\"A\" — it converts the number to that Unicode code point",
-            "\"65\" — it formats the number as text",
-            "A compile error; use strconv",
-            "\"\\x41\" as a two-character escape sequence"
-          ],
-          "answer": 0,
-          "explain": "`\"A\"`. `string(int)` means \"the character with this code point\", which is almost never what someone converting a number to text wanted. Use `strconv.Itoa(n)` or `fmt.Sprint(n)`. `go vet` has a check for exactly this mistake because it bit so many people.",
-          "tag": "gotcha"
         },
         {
           "id": "string-conv-match",
@@ -356,7 +342,7 @@
         {
           "id": "shadow-fix-fill",
           "type": "fill",
-          "prompt": "`cfg` and `err` already exist in the enclosing function. Which operator should the line inside the `if` block use instead of `:=`?",
+          "prompt": "`cfg` and `err` already exist in the enclosing function. What should the line inside the `if` block use instead of `:=`?",
           "accept": [
             "=",
             "the = operator",

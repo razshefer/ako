@@ -36,7 +36,8 @@
         ],
         "answer": 0,
         "explain": "A goroutine per connection, so 50 copies of your handler running at once. Go has no global lock — `GOMAXPROCS` caps how many run *in parallel* on CPU, not how many exist. Two consequences: shared state needs a mutex, and a goroutine that blocks forever is a leak you pay for per connection."
-      }
+      },
+      "watch": "GOMAXPROCS caps how many goroutines run on CPU at one instant, not how many can exist. Since Go 1.25 it also respects the cgroup CPU limit, which is the Kubernetes CPU *limit* — so a pod with a low limit now gets a correspondingly low default."
     },
     {
       "actor": "encoding/json",
@@ -140,6 +141,6 @@
     "A capital letter is Go's only access modifier, and every reflection-based library obeys it.",
     "A value receiver copies the struct; the copy's fields are lost, but anything it points at is still shared.",
     "The zero value of a map, slice, channel, pointer or interface is nil — reading is fine, writing to a nil map panics.",
-    "net/http recovers a panicking handler by logging it and dropping the connection; a panic in a goroutine you started kills the process."
+    "On HTTP/1.1, net/http recovers a panicking handler by logging it and dropping the connection — HTTP/2 resets just that stream; a panic in a goroutine you started yourself kills the process."
   ]
 }

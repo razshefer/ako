@@ -130,12 +130,13 @@
         {
           "id": "copy-independent",
           "type": "fill",
-          "prompt": "Which builtin copies elements from one slice into another that already has length?",
+          "prompt": "`dst := make([]int, len(src))` already exists. Write the call that fills it from `src`.",
           "accept": [
-            "copy",
-            "copy()"
+            "copy(dst, src)",
+            "copy(dst,src)",
+            "copy"
           ],
-          "placeholder": "builtin",
+          "placeholder": "the call",
           "explain": "`copy(dst, src)`. It copies `min(len(dst), len(src))` elements and returns that count — so `copy(make([]int, 0), src)` copies nothing, a classic mistake. Allocate with the right *length*, not capacity: `dst := make([]int, len(src))`."
         },
         {
@@ -251,7 +252,7 @@
     {
       "id": "iteration",
       "title": "range, and what it gives you",
-      "brief": "`range` hands you a **copy** of each element. Assigning to the loop variable changes nothing in the collection — to mutate, index into it: `s[i].Field = x`.\n\nMap iteration order is **deliberately randomized**. The runtime starts at a random bucket on every run, specifically so nobody can write code that depends on an order that was never guaranteed. If you need a stable order, collect the keys and sort them.\n\nWhat `range` yields depends on the type: index+value for slices and arrays, key+value for maps, byte-offset+rune for strings, and a single value for channels.",
+      "brief": "`range` hands you a **copy** of each element. Assigning to the loop variable changes nothing in the collection — to mutate, index into it: `s[i].Field = x`.\n\nMap iteration order is **deliberately randomized**. The runtime starts at a random bucket on every `range`, specifically so nobody can write code that depends on an order that was never guaranteed. If you need a stable order, collect the keys and sort them.\n\nWhat `range` yields depends on the type: index+value for slices and arrays, key+value for maps, byte-offset+rune for strings, and a single value for channels.",
       "examples": [
         {
           "label": "The loop variable is a copy",

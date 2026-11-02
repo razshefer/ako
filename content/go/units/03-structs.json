@@ -17,7 +17,7 @@
         {
           "label": "Where the method set bites",
           "lang": "log",
-          "code": "cannot use buf (variable of type Buffer) as io.Writer value in argument to fmt.Fprintf:\n\tBuffer does not implement io.Writer (method Write has pointer receiver)",
+          "code": "cannot use buf (variable of type Buffer) as io.Writer value in argument to fmt.Fprintf: Buffer does not implement io.Writer (method Write has pointer receiver)",
           "note": "The fix is almost always `&buf`. The error text names the exact method, which makes it one of Go's more helpful messages."
         }
       ],
@@ -42,7 +42,7 @@
           "code": {
             "lang": "log",
             "label": "go build",
-            "text": "cannot use buf (variable of type Buffer) as io.Writer value in argument to fmt.Fprintf:\n\tBuffer does not implement io.Writer (method Write has pointer receiver)"
+            "text": "cannot use buf (variable of type Buffer) as io.Writer value in argument to fmt.Fprintf: Buffer does not implement io.Writer (method Write has pointer receiver)"
           },
           "choices": [
             "Pass `&buf` — only *Buffer's method set includes pointer-receiver methods",
@@ -163,9 +163,10 @@
           ],
           "answers": [
             0,
-            1
+            1,
+            3
           ],
-          "explain": "The first two. `newPool` is lowercase. The fourth is the subtle one: `Timeout` is exported, but it lives in `config`, which another package cannot name — so it cannot hold one to reach the field. Exporting a field on an unexported type is only useful via reflection, which is precisely how unexported types still marshal to JSON."
+          "explain": "Three of them, and the last is the interesting one. A field is exported on its own first letter, so `Timeout` is exported even though `config` is not. Another package cannot *name* `config`, so it cannot declare one — but if an exported function hands one back, `cfg := pkg.New(); cfg.Timeout` compiles fine. It is also why an unexported type still marshals to JSON perfectly well. Only `newPool` is genuinely out of reach."
         },
         {
           "id": "omitempty-false",
@@ -241,7 +242,7 @@
             "The mutex becomes nil in the copy and panics on Lock"
           ],
           "answer": 0,
-          "explain": "You end up with two independent mutexes guarding what you thought was one thing, so the mutual exclusion silently stops working — and it will look fine under light load. A type containing a mutex should always be passed and stored as a pointer. `go vet`'s copylocks check is on by default and runs as part of `go test`.",
+          "explain": "You end up with two independent mutexes guarding what you thought was one thing, so the mutual exclusion silently stops working — and it will look fine under light load. A type containing a mutex should always be passed and stored as a pointer. `go vet`'s copylocks check is on by default — but not in the reduced set that `go test` runs, so it only fires when you invoke vet yourself.",
           "tag": "concurrency"
         },
         {
@@ -293,7 +294,7 @@
         {
           "id": "no-override",
           "type": "mcq",
-          "prompt": "`Base.Describe()` calls `b.Name()`. `Job` embeds `Base` and defines its own `Name()`. Which `Name()` runs when you call `job.Describe()`?",
+          "prompt": "`Base.Describe()` calls `b.Label()`. `Job` embeds `Base` and defines its own `Label()`. Which `Name()` runs when you call `job.Describe()`?",
           "choices": [
             "Base's — there is no virtual dispatch, so the embedded method never sees Job",
             "Job's — the outer type's method overrides the embedded one",
@@ -303,6 +304,18 @@
           "answer": 0,
           "explain": "`Base`'s. The receiver inside `Describe` is a `Base` and it knows nothing about any type embedding it. This is the sharpest difference from inheritance, and it bites people porting a template-method pattern from Java or Python. To get polymorphism in Go you pass an **interface**, not an embedded struct.",
           "tag": "mental model"
+        },
+        {
+          "id": "selector-depth",
+          "type": "order",
+          "prompt": "`job.Thing` — put the steps Go takes to resolve that name in order.",
+          "steps": [
+            "Look for Thing declared directly on Job",
+            "If it is not there, look one level in, at the types Job embeds",
+            "If exactly one embedded type has it at that depth, promote it",
+            "If two embedded types have it at the same depth, the selector is ambiguous and it is a compile error"
+          ],
+          "explain": "Shallowest wins, and a tie is an error rather than a choice. That is the whole mechanism: a field on the outer type shadows a promoted one, and embedding two types that both have `Close()` compiles happily until the day you actually call `x.Close()`. Writing `x.Inner.Close()` is how you break the tie."
         },
         {
           "id": "embed-mutex",

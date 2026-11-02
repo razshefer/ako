@@ -78,7 +78,7 @@
       "concept": "k8s-architecture/rancher/fleet"
     },
     "GOMAXPROCS": {
-      "short": "How many goroutines Go will run on CPU at the same instant. It defaults to the number of available cores, and it caps parallelism, not how many goroutines can exist."
+      "short": "How many goroutines Go will run on CPU at the same instant. It caps parallelism, not how many goroutines can exist. It defaults to the number of cores — and from Go 1.25, on Linux, to the cgroup CPU limit when that is lower, which is the CPU limit on a pod."
     },
     "GitRepo": {
       "short": "The Fleet object naming a repo, branch and paths to watch.",
@@ -489,7 +489,8 @@
       "short": "Look at what is wanted, look at what exists, and close the gap. Repeat forever."
     },
     "recover": {
-      "short": "Stops a panic from killing the program, but only inside a deferred function and only in the same goroutine that panicked. It cannot catch a runtime fatal error such as concurrent map writes."
+      "short": "Stops a panic from killing the program, but only inside a deferred function and only in the same goroutine that panicked. It cannot catch a runtime fatal error such as concurrent map writes.",
+      "auto": false
     },
     "reflection": {
       "short": "Code inspecting types and values while the program runs, instead of at compile time. It is how JSON encoding fills your structs, and it can only see exported fields."
@@ -607,7 +608,6 @@
     "apiserver": "kube-apiserver",
     "controller-manager": "kube-controller-manager",
     "controllers": "controller",
-    "embedded": "embedding",
     "evicted": "eviction",
     "eviction threshold": "eviction",
     "finalizers": "finalizer",
