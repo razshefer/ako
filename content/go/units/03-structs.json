@@ -17,8 +17,8 @@
         {
           "label": "Where the method set bites",
           "lang": "log",
-          "code": "cannot use buf (variable of type Buffer) as io.Writer value in argument to fmt.Fprintf: Buffer does not implement io.Writer (method Write has pointer receiver)",
-          "note": "The fix is almost always `&buf`. The error text names the exact method, which makes it one of Go's more helpful messages."
+          "code": "Buffer does not implement io.Writer (method Write has pointer receiver)",
+          "note": "The full line begins `cannot use buf (variable of struct type Buffer) as io.Writer value in argument to fmt.Fprintf:` — this is its tail, which is the half that tells you what to do. The fix is almost always `&buf`."
         }
       ],
       "items": [
@@ -41,8 +41,8 @@
           "prompt": "`Write` is defined on `*Buffer`. You pass a `Buffer` value where an `io.Writer` is wanted.",
           "code": {
             "lang": "log",
-            "label": "go build",
-            "text": "cannot use buf (variable of type Buffer) as io.Writer value in argument to fmt.Fprintf: Buffer does not implement io.Writer (method Write has pointer receiver)"
+            "label": "the tail of the compiler line",
+            "text": "Buffer does not implement io.Writer (method Write has pointer receiver)"
           },
           "choices": [
             "Pass `&buf` — only *Buffer's method set includes pointer-receiver methods",

@@ -1,0 +1,350 @@
+{
+  "id": "concurrency",
+  "title": "Goroutines and channels",
+  "summary": "Cheap concurrency, blocking as the default, and the ways it stops.",
+  "concepts": [
+    {
+      "id": "goroutines",
+      "title": "Goroutines",
+      "brief": "`go f()` runs `f` concurrently and returns immediately. The goroutine starts with a couple of kilobytes of stack that grows as needed, so hundreds of thousands of them is normal where hundreds of OS threads would not be.\n\nTwo rules that catch everyone:\n\n- **You cannot get a return value.** `go f()` discards whatever `f` returns, including its error. Results come back over a channel or via a shared variable under a lock.\n- **When `main` returns, the program exits**, and every other goroutine is killed mid-step with no `defer` run and no warning.",
+      "examples": [
+        {
+          "label": "Waiting for a group of them",
+          "lang": "go",
+          "code": "var wg sync.WaitGroup\n\nfor _, u := range urls {\n\twg.Add(1)              // BEFORE the go statement\n\tgo func() {\n\t\tdefer wg.Done()    // deferred, so a panic still counts\n\t\tfetch(u)\n\t}()\n}\n\nwg.Wait()                      // blocks until the counter hits zero",
+          "note": "`Add` must happen before the `go`, not inside the goroutine — otherwise `Wait` can run before the counter was ever raised and return immediately."
+        },
+        {
+          "label": "main does not wait",
+          "lang": "go",
+          "code": "func main() {\n\tgo fmt.Println(\"hello\")\n\t// main returns here\n}\n// prints nothing, usually",
+          "note": "The goroutine is scheduled but the process exits before it runs. This is also why a background worker with no `wg.Wait()` silently does nothing in a short-lived job."
+        }
+      ],
+      "items": [
+        {
+          "id": "go-return",
+          "type": "mcq",
+          "prompt": "`go doWork()` where `doWork` returns `error`. How do you get the error?",
+          "choices": [
+            "Not from the go statement — send it on a channel or collect it under a lock",
+            "Assign it: `err := go doWork()`",
+            "Read it from the goroutine's exit status after wg.Wait()",
+            "Recover it in the parent, since a returned error surfaces as a panic"
+          ],
+          "answer": 0,
+          "explain": "`go` is a statement, not an expression — there is nowhere for a value to go. This is the single biggest source of silently swallowed errors in Go services: work is fired off with `go`, it fails, and nothing ever learns. `errgroup.Group` exists mostly to solve this."
+        },
+        {
+          "id": "main-exits",
+          "type": "mcq",
+          "prompt": "`func main() { go fmt.Println(\"hello\") }` — what does it print?",
+          "choices": [
+            "Usually nothing — main returns and the process exits before it runs",
+            "hello, reliably",
+            "hello, but only on a multi-core machine",
+            "Nothing, and it deadlocks on exit"
+          ],
+          "answer": 0,
+          "explain": "The process exits when `main` returns, taking every goroutine with it — no `defer` runs, no cleanup, nothing flushed. It is a race you usually lose, which is worse than always losing it, because it will occasionally work on your laptop."
+        },
+        {
+          "id": "waitgroup-order",
+          "type": "order",
+          "prompt": "Put the correct use of a WaitGroup for one worker in order.",
+          "steps": [
+            "wg.Add(1), before the go statement",
+            "go func() { ... }() starts the worker",
+            "Inside it, defer wg.Done() so it runs even on a panic",
+            "wg.Wait() blocks in the caller until the counter reaches zero"
+          ],
+          "explain": "`Add` before `go` is the part that matters. Put `wg.Add(1)` inside the goroutine and `Wait` may run first, see zero, and return while nothing has started. And `Done` belongs in a `defer` — a worker that panics and is recovered higher up would otherwise leave `Wait` blocked forever."
+        },
+        {
+          "id": "goroutine-cost",
+          "type": "mcq",
+          "prompt": "Roughly what does an idle goroutine cost, and what does that imply?",
+          "choices": [
+            "A couple of KB of stack that grows on demand — tens of thousands is routine",
+            "The same as an OS thread, around 1 MB — keep a pool",
+            "A full OS thread each, which is why a worker pool is mandatory",
+            "One OS thread each, capped by GOMAXPROCS"
+          ],
+          "answer": 0,
+          "explain": "A small growable stack, multiplexed onto a few OS threads by the runtime. That is why `net/http` can start one per connection without a pool. The flip side is that leaking them is easy and cheap enough to go unnoticed until there are 20,000."
+        }
+      ]
+    },
+    {
+      "id": "channels",
+      "title": "Channels",
+      "brief": "A typed pipe between goroutines, where **blocking is the point**.\n\n- **Unbuffered** (`make(chan T)`) — a rendezvous. The send completes only when a receiver takes the value; both sides wait for the other.\n- A **buffered channel** (`make(chan T, n)`) — the send completes while there is room, and blocks when the buffer is full.\n\nClosing is a broadcast, not a cleanup. Receives from a closed channel return the **zero value immediately**, forever; `v, ok := <-ch` sets `ok` false, and `for v := range ch` ends.\n\nOnly the sender should close, because sending on a closed channel panics and there is no way to ask whether a channel is closed.",
+      "examples": [
+        {
+          "label": "The panics, and the one that hangs",
+          "lang": "go",
+          "code": "ch := make(chan int)\nclose(ch)\n\n<-ch              // fine: returns 0 immediately, forever\nv, ok := <-ch     // v == 0, ok == false\n\nch <- 1           // panic: send on closed channel\nclose(ch)         // panic: close of closed channel\n\nvar nilCh chan int\nnilCh <- 1        // blocks forever - no panic, just gone\n<-nilCh           // also blocks forever\nclose(nilCh)      // panic: close of nil channel",
+          "note": "The nil channel is the quiet one: it is not an error, it simply never proceeds. A nil channel in a `select` disables that case, which is occasionally useful on purpose."
+        },
+        {
+          "label": "Ranging until closed",
+          "lang": "go",
+          "code": "jobs := make(chan int, 10)\n\ngo func() {\n\tdefer close(jobs)     // the SENDER closes\n\tfor i := 0; i < 5; i++ {\n\t\tjobs <- i\n\t}\n}()\n\nfor j := range jobs {     // ends when jobs is closed\n\tprocess(j)\n}",
+          "note": "Without the `close`, this `range` blocks forever after the fifth job — and if it is the only goroutine left, the runtime reports a deadlock."
+        }
+      ],
+      "items": [
+        {
+          "id": "unbuffered-send",
+          "type": "mcq",
+          "prompt": "`ch := make(chan int)` and one goroutine does `ch <- 1`. No one is receiving yet. What happens?",
+          "choices": [
+            "The send blocks until some goroutine receives",
+            "The value is queued and the send returns immediately",
+            "It panics — an unbuffered channel cannot hold a value",
+            "The value is dropped and the send returns"
+          ],
+          "answer": 0,
+          "explain": "An unbuffered channel has nowhere to put the value, so the send waits for a receiver to meet it. That is the synchronization: after the send completes, you know a receiver has it. It is also how a result channel leaks a goroutine when the receiver gives up first."
+        },
+        {
+          "id": "closed-channel-match",
+          "type": "match",
+          "prompt": "Match each operation on a *closed* channel to what it does.",
+          "pairs": [
+            [
+              "<-ch",
+              "Returns the zero value immediately, every time"
+            ],
+            [
+              "v, ok := <-ch",
+              "ok is false — how you detect the close"
+            ],
+            [
+              "ch <- 1",
+              "panic: send on closed channel"
+            ],
+            [
+              "close(ch) again",
+              "panic: close of closed channel"
+            ]
+          ],
+          "explain": "Receiving is safe and sending is fatal, which is the whole reason the convention is that only the sender closes. With multiple senders you need something else — a `sync.Once`, or a separate done channel that they all watch."
+        },
+        {
+          "id": "range-close",
+          "type": "mcq",
+          "prompt": "`for j := range jobs` and the producer finishes without calling `close(jobs)`.",
+          "choices": [
+            "The loop blocks forever waiting for a value that never comes",
+            "The loop ends when the buffer empties",
+            "The loop ends when the producer goroutine returns",
+            "It panics with 'range over unclosed channel'"
+          ],
+          "answer": 0,
+          "explain": "`range` over a channel ends only on close — it has no other way to know the stream is finished. If that consumer is the last runnable goroutine you get `fatal error: all goroutines are asleep - deadlock!`; if anything else is still running, you just hang quietly, which is worse.",
+          "tag": "hang"
+        },
+        {
+          "id": "nil-channel",
+          "type": "mcq",
+          "prompt": "`var ch chan int` — never made. You send on it.",
+          "choices": [
+            "It blocks forever — no panic, no error",
+            "It panics with 'send on nil channel'",
+            "It succeeds; nil channels discard values",
+            "It does not compile"
+          ],
+          "answer": 0,
+          "explain": "Sends and receives on a nil channel block forever. Unlike the nil map there is no panic to tell you — the goroutine parks and never returns, showing up in a profile as `chan send (nil chan)`. Closing one is the exception: `close(nil)` panics with `close of nil channel`. The usual cause of all three is a struct field nobody initialized.",
+          "tag": "hang"
+        },
+        {
+          "id": "make-chan-fill",
+          "type": "fill",
+          "prompt": "Write the expression making a channel of `string` that can hold one value without a receiver.",
+          "accept": [
+            "make(chan string, 1)",
+            "make(chan string,1)"
+          ],
+          "placeholder": "expression",
+          "explain": "`make(chan string, 1)`. This exact shape is the fix for the leaked result goroutine: one buffered slot means the send always completes, so the sender always exits even when the receiver has already timed out and gone."
+        }
+      ]
+    },
+    {
+      "id": "sharing",
+      "title": "Channels or a mutex",
+      "brief": "The proverb is *\"don't communicate by sharing memory; share memory by communicating\"* — but it is advice, not a law, and the standard library is full of mutexes.\n\n- **A channel** suits handing *ownership* of a value from one goroutine to another: pipelines, work queues, results, signals.\n- **A mutex** suits protecting *state that stays put*: a cache, a counter, a map of connections.\n\nUsing a channel where a mutex belongs produces a goroutine whose only job is to own a variable, and a lot of ceremony to read it. The usual mistake is reaching for the clever one.",
+      "examples": [
+        {
+          "label": "A mutex is the right tool here",
+          "lang": "go",
+          "code": "type Counter struct {\n\tmu sync.Mutex\n\tn  map[string]int\n}\n\nfunc (c *Counter) Inc(k string) {\n\tc.mu.Lock()\n\tdefer c.mu.Unlock()\n\tc.n[k]++\n}",
+          "note": "Pointer receiver, `defer Unlock` so an early return or a panic still releases, and the mutex sits immediately above the thing it guards."
+        },
+        {
+          "label": "RWMutex, when reads dominate",
+          "lang": "go",
+          "code": "var mu sync.RWMutex\n\nmu.RLock()          // many readers at once\nv := cache[key]\nmu.RUnlock()\n\nmu.Lock()           // exclusive\ncache[key] = v\nmu.Unlock()",
+          "note": "Only worth it when reads heavily outnumber writes — RWMutex has more overhead per operation than a plain Mutex."
+        }
+      ],
+      "items": [
+        {
+          "id": "chan-or-mutex",
+          "type": "mcq",
+          "prompt": "You have an in-memory cache read and written by many handlers. Channel or mutex?",
+          "choices": [
+            "A mutex — the state stays in one place and is protected, not handed over",
+            "A channel, so access is serialized through one owner goroutine",
+            "Neither; maps are safe for concurrent reads and writes",
+            "A channel per key, to avoid a global lock"
+          ],
+          "answer": 0,
+          "explain": "A mutex. Channels are for transferring ownership; a cache is shared state that nobody owns exclusively. The channel version needs a dedicated goroutine, a request channel and a reply channel per lookup — far more machinery, and slower."
+        },
+        {
+          "id": "defer-unlock",
+          "type": "mcq",
+          "prompt": "Why is `defer c.mu.Unlock()` immediately after `Lock()` the standard shape?",
+          "choices": [
+            "It releases the lock on every exit path, including a panic",
+            "It makes the lock reentrant",
+            "It is faster than calling Unlock directly",
+            "It prevents the mutex from being copied"
+          ],
+          "answer": 0,
+          "explain": "Every `return`, and any panic recovered higher up, still unlocks. A manual `Unlock` before one return and not another leaves the mutex held forever, and every other goroutine piles up behind it — a hang with no error anywhere. Go's mutexes are not reentrant, so re-locking in the same goroutine deadlocks it against itself."
+        },
+        {
+          "id": "sharing-match",
+          "type": "match",
+          "prompt": "Match each job to the tool that fits it.",
+          "pairs": [
+            [
+              "A work queue feeding N workers",
+              "A buffered channel"
+            ],
+            [
+              "A shared map of open connections",
+              "A mutex beside it"
+            ],
+            [
+              "Telling every worker to stop",
+              "Close a done channel"
+            ],
+            [
+              "Waiting for N workers to finish",
+              "A WaitGroup"
+            ]
+          ],
+          "explain": "Closing a channel as a broadcast is the one worth remembering: every receiver unblocks at once, which is how `ctx.Done()` works underneath. You cannot do that with a mutex, and you do not need a channel per listener."
+        },
+        {
+          "id": "race-detector",
+          "type": "mcq",
+          "prompt": "Two goroutines increment the same `int` with no lock. What finds it?",
+          "choices": [
+            "`go test -race` — the race detector flags concurrent unsynchronized access",
+            "`go vet`, at compile time",
+            "The runtime, with a fatal error like it does for maps",
+            "Nothing; an int increment is atomic on 64-bit machines"
+          ],
+          "answer": 0,
+          "explain": "`-race` instruments memory access and reports the two stacks involved, which is usually enough to fix it immediately. The runtime has a built-in check for *maps* but not for plain variables, so an unprotected `n++` silently loses updates. `n++` is read-modify-write — never atomic, on any architecture.",
+          "tag": "tooling"
+        }
+      ]
+    },
+    {
+      "id": "leaks",
+      "title": "Deadlocks and leaks",
+      "brief": "Two different failures that look similar from outside:\n\n- **Deadlock** — every goroutine is blocked. The runtime notices and kills the program with `fatal error: all goroutines are asleep - deadlock!`.\n- **Leak** — *some* goroutines are blocked forever while others keep working. The runtime says nothing, because the program is still making progress.\n\nThe leak is the dangerous one. A blocked goroutine is never collected and holds everything it references, so the symptom is memory climbing with no obvious allocation — and it usually correlates with someone else being slow, not with your own traffic.",
+      "examples": [
+        {
+          "label": "The runtime catches only the total case",
+          "lang": "log",
+          "code": "fatal error: all goroutines are asleep - deadlock!\n\ngoroutine 1 [chan receive]:\nmain.main()\n        /app/main.go:12 +0x5a",
+          "note": "Only when *every* goroutine is blocked. One live background goroutine — a ticker, an HTTP server — and the detector stays quiet forever."
+        },
+        {
+          "label": "Counting them is the cheap diagnostic",
+          "lang": "bash",
+          "code": "$ curl -s localhost:6060/debug/pprof/goroutine?debug=1 | head -2\ngoroutine profile: total 20148",
+          "note": "Needs `import _ \"net/http/pprof\"`. Exporting `runtime.NumGoroutine()` as a metric gives you the same signal on a dashboard."
+        }
+      ],
+      "items": [
+        {
+          "id": "deadlock-vs-leak",
+          "type": "mcq",
+          "prompt": "Why does a leaked goroutine in an HTTP server never trigger the deadlock detector?",
+          "choices": [
+            "It fires only when every goroutine is blocked; the server is still accepting",
+            "It is disabled in production builds",
+            "It only covers channels, not mutexes",
+            "It only runs during `go test`"
+          ],
+          "answer": 0,
+          "explain": "The detector asks \"is anything runnable?\" and the answer in a server is always yes. So the one situation where leaks matter most is exactly the one the runtime cannot warn you about. You need the goroutine profile, or a count on a dashboard."
+        },
+        {
+          "id": "blocked-not-collected",
+          "type": "mcq",
+          "prompt": "A goroutine is blocked forever on a channel nothing else references. Does the garbage collector clean it up?",
+          "choices": [
+            "No — a blocked goroutine is a root; it and everything it holds stay alive",
+            "Yes, once the channel becomes unreachable the goroutine is collected",
+            "Yes, after the GC's two-minute idle sweep",
+            "Only if it was started with a context"
+          ],
+          "answer": 0,
+          "explain": "The runtime cannot prove it will never run again, so it stays, along with its stack and every variable it captured. This is why goroutine leaks show up as a memory leak: each one pins a request's worth of data that would otherwise have been freed.",
+          "tag": "mental model"
+        },
+        {
+          "id": "parked-state",
+          "type": "match",
+          "prompt": "A goroutine profile groups stacks by their parked state. Match each state to the counterpart that went missing.",
+          "pairs": [
+            [
+              "chan send",
+              "No receiver — and there never will be one"
+            ],
+            [
+              "chan receive",
+              "No sender, or a channel nobody closed"
+            ],
+            [
+              "select",
+              "Every case is on a channel that is not ready"
+            ],
+            [
+              "semacquire",
+              "A mutex or WaitGroup someone else never released"
+            ]
+          ],
+          "explain": "The state names the missing half, which is usually the whole diagnosis. `chan send` in bulk means receivers gave up; `semacquire` in bulk means a lock is held by something stuck. Pair it with the line number the profile groups on and you are looking at the abandoning caller within a minute."
+        },
+        {
+          "id": "leak-shapes",
+          "type": "multi",
+          "prompt": "Which of these reliably prevent a result goroutine from leaking when the receiver may give up?",
+          "choices": [
+            "Buffer the channel to the number of values that will be sent",
+            "Select on ctx.Done() in the sender so it can abandon the send",
+            "Guarantee the receiver always receives, however late",
+            "Call runtime.Gosched() before the send"
+          ],
+          "answers": [
+            0,
+            1,
+            2
+          ],
+          "explain": "Those three are the only shapes that work, and they are the whole list: make the send not block, make the sender able to give up, or make the receiver reliable. `Gosched` just yields the processor — it changes scheduling, never whether a send can complete."
+        }
+      ]
+    }
+  ]
+}

@@ -7,9 +7,17 @@
   "units": [
     "01-values",
     "02-collections",
-    "03-structs"
+    "03-structs",
+    "04-interfaces",
+    "05-errors",
+    "06-concurrency",
+    "07-cancellation",
+    "08-defer-panic",
+    "09-packages",
+    "10-production"
   ],
   "flows": [
-    "01-request-through-a-handler"
+    "01-request-through-a-handler",
+    "02-the-goroutine-that-never-came-back"
   ]
 }

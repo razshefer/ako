@@ -77,8 +77,16 @@
       "short": "Rancher's GitOps engine, built to deploy the same git repo to many clusters selected by label.",
       "concept": "k8s-architecture/rancher/fleet"
     },
+    "GOGC": {
+      "short": "How much the heap is allowed to grow before the garbage collector runs. The default of 100 means roughly double the live data, which is how a 300MB service ends up using 600MB.",
+      "concept": "go/production/memory"
+    },
     "GOMAXPROCS": {
       "short": "How many goroutines Go will run on CPU at the same instant. It caps parallelism, not how many goroutines can exist. It defaults to the number of cores — and from Go 1.25, on Linux, to the cgroup CPU limit when that is lower, which is the CPU limit on a pod."
+    },
+    "GOMEMLIMIT": {
+      "short": "A memory budget you give the Go garbage collector. As the program approaches it, Go collects harder instead of growing — which is what stops a container being killed for using too much.",
+      "concept": "go/production/memory"
     },
     "GitRepo": {
       "short": "The Fleet object naming a repo, branch and paths to watch.",
@@ -220,6 +228,10 @@
       "short": "Do not create the disk until a pod is scheduled, so it lands in the right zone.",
       "concept": "k8s-architecture/storage/pv-pvc"
     },
+    "WaitGroup": {
+      "short": "A counter for waiting until a set of goroutines has finished. Raise it before starting each one, lower it as each ends, and wait for it to reach zero.",
+      "concept": "go/concurrency/goroutines"
+    },
     "addressable": {
       "short": "Something you can take the address of with `&`. Variables and slice elements are; map entries and function results are not, which is why you cannot assign to a struct field stored in a map."
     },
@@ -251,9 +263,21 @@
       "short": "Are you allowed to do this? Almost always RBAC. Failing gives a 403.",
       "concept": "k8s-architecture/request-path/rbac"
     },
+    "blank import": {
+      "short": "Importing a package only for its setup code, written `import _ \"path\"`. Used when a package registers something on startup, such as a database driver.",
+      "concept": "go/packages/packages"
+    },
+    "buffered channel": {
+      "short": "A channel with room for a set number of values. A send completes immediately while there is space, and only blocks once the buffer is full.",
+      "concept": "go/concurrency/channels"
+    },
     "cattle-cluster-agent": {
       "short": "The pod in a managed cluster that dials out to Rancher and holds the tunnel open.",
       "concept": "k8s-architecture/rancher/cluster-agents"
+    },
+    "cgo": {
+      "short": "Go calling C code. It makes the binary depend on system libraries, which is why a cgo build will not run on an empty container image.",
+      "concept": "go/packages/toolchain"
     },
     "cgroup": {
       "short": "The Linux feature that caps and accounts a process group's CPU and memory. How limits are enforced."
@@ -291,8 +315,16 @@
     "data plane": {
       "short": "The nodes and the containers actually serving your traffic."
     },
+    "data race": {
+      "short": "Two goroutines touching the same memory at the same time with no lock, at least one of them writing. The result is undefined rather than merely wrong-looking.",
+      "concept": "go/concurrency/sharing"
+    },
     "deadlock": {
       "short": "Two or more parties each waiting for the other to move first, so nothing ever proceeds."
+    },
+    "defer": {
+      "short": "Schedules a call to run when the surrounding function returns, by any route including a panic. Its arguments are evaluated straight away; only the call waits.",
+      "concept": "go/defer-panic/defer"
     },
     "deletionTimestamp": {
       "short": "Set when you delete something that has a finalizer. The object stays, marked as going away.",
@@ -309,6 +341,10 @@
     "embedding": {
       "short": "Putting a type inside a struct without giving it a field name, so its methods and fields can be used directly on the outer type. It looks like inheritance but there is no overriding.",
       "concept": "go/structs/embedding"
+    },
+    "error wrapping": {
+      "short": "Putting one error inside another with `%w` so each layer can add context while the original stays findable underneath.",
+      "concept": "go/errors/wrapping"
     },
     "etcd": {
       "short": "The cluster's database. Every object you create is stored here, and nothing else is remembered.",
@@ -330,6 +366,10 @@
       "short": "What happens when a webhook is unreachable: Fail rejects the request, Ignore lets it through.",
       "concept": "k8s-architecture/request-path/admission"
     },
+    "fatal error": {
+      "short": "A failure the Go runtime judges unsurvivable, such as two goroutines writing one map. Unlike a panic, nothing can catch it and no cleanup runs.",
+      "concept": "go/production/reading-crashes"
+    },
     "finalizer": {
       "short": "A note on an object meaning 'do not really delete this until I have cleaned up'. The usual reason things get stuck Terminating.",
       "concept": "k8s-architecture/controllers/finalizers"
@@ -337,6 +377,10 @@
     "garbage collector": {
       "short": "The loop that deletes objects whose owner no longer exists.",
       "concept": "k8s-architecture/controllers/ownership"
+    },
+    "gofmt": {
+      "short": "Go's formatter. It has essentially no options, so every Go codebase is laid out the same way and there is nothing to argue about.",
+      "concept": "go/packages/toolchain"
     },
     "goroutine": {
       "short": "A function running independently, managed by Go itself rather than the operating system. They start in microseconds and cost a couple of kilobytes, so a program can have hundreds of thousands at once."
@@ -359,6 +403,10 @@
     "ingress controller": {
       "short": "The proxy that reads Ingress objects and actually serves the traffic. RKE2 ships ingress-nginx.",
       "concept": "k8s-architecture/networking/ingress-netpol"
+    },
+    "internal package": {
+      "short": "A directory named `internal`, which only code beneath its parent may import. The compiler enforces it, so it is the one real privacy boundary above naming.",
+      "concept": "go/packages/packages"
     },
     "kube-apiserver": {
       "short": "The front door to the cluster. Every request and every component goes through it, and it is the only thing that talks to etcd.",
@@ -415,6 +463,10 @@
       "short": "The methods a type counts as having when checked against an interface. A pointer type has all of them; a plain value type has only the ones with value receivers.",
       "concept": "go/structs/receivers"
     },
+    "minimal version selection": {
+      "short": "How Go picks dependency versions: the highest version anyone explicitly asked for, and never anything newer. No solver, and no surprise upgrades.",
+      "concept": "go/packages/modules"
+    },
     "mirror pod": {
       "short": "The read-only copy of a static pod that shows up in kubectl. Deleting it changes nothing."
     },
@@ -423,6 +475,10 @@
     },
     "mutex": {
       "short": "A lock that lets only one goroutine at a time touch something. Go's lives in `sync.Mutex`, and its zero value is ready to use with no setup."
+    },
+    "named return": {
+      "short": "Giving a function's return values names in its signature, which lets deferred code change what the caller actually receives.",
+      "concept": "go/defer-panic/named-returns"
     },
     "namespace": {
       "short": "A folder for objects, used for names, RBAC and quotas. Not a security boundary on its own."
@@ -460,6 +516,10 @@
     "pointer receiver": {
       "short": "A method defined on a pointer to its type, like `func (s *Store) Add()`. It operates on the original, so changes stick.",
       "concept": "go/structs/receivers"
+    },
+    "pprof": {
+      "short": "Go's built-in profiler. Exposed over HTTP it reports what the program is allocating, what it is spending CPU on, and what every goroutine is currently waiting for.",
+      "concept": "go/production/profiling"
     },
     "preStop": {
       "short": "A hook that runs before SIGTERM. A few seconds of sleep here removes most rollout 502s.",
@@ -526,12 +586,20 @@
     "rune": {
       "short": "A single Unicode character, stored as a 32-bit number. Needed because Go strings are counted in bytes, and one character can take several of them."
     },
+    "sentinel error": {
+      "short": "A single error value created once at package level, like `ErrNotFound`, that callers test for by identity rather than by reading its message.",
+      "concept": "go/errors/sentinels"
+    },
     "sidecar": {
       "short": "An extra container in the same pod that supports the main one, such as a proxy or log shipper."
     },
     "slice header": {
       "short": "What a slice actually is: a pointer to an array, a length and a capacity. Copying a slice copies these three fields, not the data they point at.",
       "concept": "go/collections/slice-header"
+    },
+    "stack trace": {
+      "short": "The list of function calls that led to the point where something failed, printed innermost first. The deepest line in your own code is usually where to start.",
+      "concept": "go/production/reading-crashes"
     },
     "startup probe": {
       "short": "Gives a slow-booting app time before the other probes start judging it.",
@@ -573,6 +641,18 @@
       "short": "Spread replicas evenly across zones or nodes, with a tolerance for how uneven it may get.",
       "concept": "k8s-architecture/scheduling/affinity"
     },
+    "type assertion": {
+      "short": "Pulling the concrete value back out of an interface, written `x.(Foo)`. Use the two-value form `v, ok := x.(Foo)` — the one-value form crashes when the type is not what you expected.",
+      "concept": "go/interfaces/assertions"
+    },
+    "type switch": {
+      "short": "A switch on what type an interface is holding, written `switch v := x.(type)`. Each branch gets the value already typed for it.",
+      "concept": "go/interfaces/assertions"
+    },
+    "unbuffered channel": {
+      "short": "A channel with no room to hold anything, so a send waits until a receiver is ready to take the value. The two goroutines meet, which is what makes it a synchronization point.",
+      "concept": "go/concurrency/channels"
+    },
     "untyped constant": {
       "short": "A constant with no fixed type, so it adopts whatever type the surrounding code needs. It is why `const n = 3` can be used as an int in one place and a float64 in another.",
       "concept": "go/values/declarations"
@@ -604,19 +684,26 @@
     "PVs": "PV",
     "PodDisruptionBudgets": "PodDisruptionBudget",
     "StorageClasses": "StorageClass",
+    "WaitGroups": "WaitGroup",
     "admission webhooks": "admission webhook",
     "apiserver": "kube-apiserver",
     "controller-manager": "kube-controller-manager",
     "controllers": "controller",
+    "data races": "data race",
+    "deferred": "defer",
+    "defers": "defer",
     "evicted": "eviction",
     "eviction threshold": "eviction",
+    "fatal errors": "fatal error",
     "finalizers": "finalizer",
     "goroutines": "goroutine",
     "informers": "informer",
     "ingress controllers": "ingress controller",
+    "internal packages": "internal package",
     "level-triggered": "reconcile",
     "method sets": "method set",
     "mutexes": "mutex",
+    "named returns": "named return",
     "namespaces": "namespace",
     "operators": "operator",
     "ownerReferences": "ownerReference",
@@ -626,12 +713,18 @@
     "reflective": "reflection",
     "runes": "rune",
     "scheduler": "kube-scheduler",
+    "sentinel": "sentinel error",
+    "sentinel errors": "sentinel error",
     "sidecars": "sidecar",
     "slice headers": "slice header",
+    "stack traces": "stack trace",
     "static pods": "static pod",
     "struct tags": "struct tag",
     "taints": "taint",
     "tolerations": "toleration",
+    "type assertions": "type assertion",
+    "type switches": "type switch",
+    "unbuffered": "unbuffered channel",
     "value receivers": "value receiver",
     "zero values": "zero value"
   }
