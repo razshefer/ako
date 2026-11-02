@@ -101,8 +101,8 @@
         {
           "label": "Watching the collector work",
           "lang": "bash",
-          "code": "$ GODEBUG=gctrace=1 ./app\ngc 1 @0.021s 0%: ... 4->4->1 MB, 5 MB goal, 8 P",
-          "note": "`4->4->1 MB` is heap before, after marking, and live; `5 MB goal` is the next trigger. Rising live size across cycles is a real leak rather than GC lag."
+          "code": "$ GODEBUG=gctrace=1 ./app\ngc 1 @0.021s 0%: ... 4->4->1 MB, 5 MB goal, 0 MB stacks, 0 MB globals, 8 P",
+          "note": "`4->4->1 MB` is heap size at GC start, at GC end, and live afterwards; `5 MB goal` is the next trigger. Rising live size across cycles is a real leak rather than GC lag."
         }
       ],
       "items": [
@@ -139,7 +139,7 @@
           "prompt": "Why does an OOMKilled Go container usually leave no stack trace?",
           "choices": [
             "The kernel kills the process with SIGKILL — Go gets no chance to print",
-            "Go writes the trace to a file instead of stderr",
+            "Go catches SIGKILL and writes a trace, but the container is gone before it flushes",
             "Out-of-memory is a fatal error, and those print nothing",
             "The trace is written but truncated by the container runtime"
           ],

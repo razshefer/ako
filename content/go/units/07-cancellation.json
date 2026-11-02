@@ -97,7 +97,7 @@
           "label": "Deriving one, and respecting it",
           "lang": "go",
           "code": "ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)\ndefer cancel()                 // ALWAYS, even on the happy path\n\nreq, _ := http.NewRequestWithContext(ctx, \"GET\", url, nil)\nresp, err := http.DefaultClient.Do(req)\nif err != nil {\n\tif errors.Is(err, context.DeadlineExceeded) {\n\t\treturn fmt.Errorf(\"upstream too slow: %w\", err)\n\t}\n\treturn err\n}",
-          "note": "`r.Context()` is already canceled when the client disconnects, so deriving from it means a user hitting stop also stops your upstream call."
+          "note": "`r.Context()` is canceled when the client disconnects **and when your handler returns**, so deriving from it ties your upstream call to the life of the request."
         },
         {
           "label": "A goroutine that can be told to stop",
@@ -191,7 +191,7 @@
     {
       "id": "timeouts",
       "title": "Timeouts that actually fire",
-      "brief": "A timeout only works if the thing you are waiting on can be **interrupted**. Selecting on a timer tells *you* to stop waiting; it does nothing to the work.\n\nThat is the difference between `time.After` in a `select` and a context deadline threaded into the call. The first abandons the result. The second abandons the work.\n\nFor HTTP specifically: `http.Client.Timeout` covers the whole exchange including reading the body, while a context deadline is per-request and composes with everything else. The default `http.Client` and `http.DefaultTransport` have **no overall timeout**, which is how a hung upstream becomes a hung service.",
+      "brief": "A timeout only works if the thing you are waiting on can be **interrupted**. Selecting on a timer tells *you* to stop waiting; it does nothing to the work.\n\nThat is the difference between `time.After` in a `select` and a context deadline threaded into the call. The first abandons the result. The second abandons the work.\n\nFor HTTP specifically: `http.Client.Timeout` covers the whole exchange including reading the body, while a context deadline is per-request and composes with everything else. The default `http.Client` and `http.DefaultTransport` have **no overall timeout**, which is how a hung upstream becomes a hung service.\n\nOne piece of folklore worth retiring: `time.After` used to keep its timer alive until it fired, so using it in a loop piled them up. Since Go 1.23 the collector can reclaim an unreferenced, unstopped timer, and the `time` documentation now says there is no reason to prefer `NewTimer` when `After` will do. It is gated on the `go` line in your `go.mod` being 1.23 or later.",
       "examples": [
         {
           "label": "Abandoning the result versus abandoning the work",

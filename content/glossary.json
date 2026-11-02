@@ -323,7 +323,7 @@
       "short": "Two or more parties each waiting for the other to move first, so nothing ever proceeds."
     },
     "defer": {
-      "short": "Schedules a call to run when the surrounding function returns, by any route including a crash. Its arguments are evaluated straight away; only the call waits.",
+      "short": "Schedules a call to run when the surrounding function returns, by any route including a panic. Its arguments are evaluated straight away; only the call waits.",
       "concept": "go/defer-panic/defer"
     },
     "deletionTimestamp": {
@@ -687,7 +687,6 @@
     "WaitGroups": "WaitGroup",
     "admission webhooks": "admission webhook",
     "apiserver": "kube-apiserver",
-    "buffered": "buffered channel",
     "controller-manager": "kube-controller-manager",
     "controllers": "controller",
     "data races": "data race",

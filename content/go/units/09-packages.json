@@ -6,7 +6,7 @@
     {
       "id": "packages",
       "title": "Packages and imports",
-      "brief": "A package is a **directory**. Every file in it declares the same `package` name, and they share one namespace — no imports between files of the same package, and an unexported identifier is visible across all of them.\n\n**Import cycles are a hard compile error.** Two packages cannot import each other, even indirectly. That forces a layered design and is one of the stronger opinions in the language.\n\nA directory named **`internal`** is special: only code rooted at its parent can import it. It is the one real access control Go has above the exported/unexported line, and it is enforced by the compiler.",
+      "brief": "A package is a **directory**. Every file in it declares the same `package` name, and they share one namespace — no imports between files of the same package, and an unexported identifier is visible across all of them.\n\n**Import cycles are a hard compile error.** Two packages cannot import each other, even indirectly. That forces a layered design and is one of the stronger opinions in the language.\n\nAn internal package — a directory named **`internal`** — is special: only code rooted at its parent can import it. It is the one real access control Go has above the exported/unexported line, and it is enforced by the compiler.",
       "examples": [
         {
           "label": "internal is enforced, not a convention",
@@ -67,17 +67,29 @@
           "explain": "The package is the unit, not the file. Splitting a package across files is purely organizational, and unexported identifiers are visible to all of them. There are no relative imports in Go, and no way to import one file from another."
         },
         {
+          "id": "init-order",
+          "type": "order",
+          "prompt": "Put the startup of a Go program in order, for one package that imports another.",
+          "steps": [
+            "The imported package is initialized first, depth-first through its own imports",
+            "This package's package-level variables are initialized",
+            "This package's init() functions run",
+            "main() is called"
+          ],
+          "explain": "Dependencies are fully initialized before anything that imports them runs, which is what makes a blank import reliable: by the time `main` starts, that driver has already registered itself. A package may have several `init()` functions, including across files, so do not rely on ordering between them — if two must happen in sequence, call one from the other."
+        },
+        {
           "id": "blank-import",
           "type": "mcq",
-          "prompt": "What does `import _ \"net/http/pprof\"` accomplish?",
+          "prompt": "What does `import _ \"github.com/lib/pq\"` accomplish, when nothing in your code names `pq`?",
           "choices": [
-            "It runs that package's init(), which registers the debug HTTP handlers",
-            "It imports it lazily, only if something references it",
+            "Its init() registers the \"postgres\" driver with database/sql",
+            "It imports it lazily, only if a query needs it",
             "It suppresses the unused-import error for a package you plan to use",
-            "It imports only the package's types, not its functions"
+            "It makes the package's types available without qualifying them"
           ],
           "answer": 0,
-          "explain": "A blank import is for side effects: you want the `init()` to run and have no need to name anything. Database drivers work the same way — `import _ \"github.com/lib/pq\"` registers \"postgres\" with `database/sql`. It is also why deleting an import that \"isn't used\" can break a program at runtime."
+          "explain": "A blank import is for side effects: you want the package's `init()` to run and have no need to name anything in it. `database/sql` has no idea what Postgres is — the driver registers itself on import, which is why `sql.Open(\"postgres\", ...)` then works. It is also why deleting an import that \"isn't used\" can break a program at runtime."
         }
       ]
     },
@@ -130,15 +142,15 @@
         {
           "id": "gosum",
           "type": "mcq",
-          "prompt": "What is `go.sum` for?",
+          "prompt": "CI fails with `missing go.sum entry`, though the build works on your machine. What does that tell you?",
           "choices": [
-            "Checksums that verify downloaded modules are unchanged — not version selection",
-            "A lockfile pinning the resolved version of every dependency",
-            "A cache of downloaded module archives",
-            "A list of modules permitted by your organization"
+            "go.sum is out of date with go.mod — run go mod tidy and commit the result",
+            "A dependency has been yanked from the proxy",
+            "Your Go version is older than the one in the go directive",
+            "The module cache on the CI runner is corrupt"
           ],
           "answer": 0,
-          "explain": "Integrity, not resolution. `go.mod` plus MVS already makes the build reproducible, so `go.sum` exists to detect a module whose contents changed under a tag you already use. Commit it — a mismatch is a supply-chain signal, and a missing entry fails the build."
+          "explain": "`go.sum` holds a checksum for every module in the build graph. It is not a lockfile — `go.mod` plus minimal version selection already decides versions — it exists so a module whose contents changed under a tag you already use is detected rather than silently built. Your machine passes because the hashes are already in your local cache. Commit `go.sum`, always."
         },
         {
           "id": "mod-match",
@@ -169,7 +181,7 @@
     {
       "id": "toolchain",
       "title": "The toolchain and the binary",
-      "brief": "`go build` produces a **single self-contained binary** with the runtime linked in. No interpreter, no shared libraries to match, no base image beyond what your own code needs. That property is why so much infrastructure software is written in Go.\n\nThe caveat is **cgo**. Some standard packages — notably `net` and `os/user` — have C-backed implementations that get used by default on some systems, which links against libc and breaks `FROM scratch`. `CGO_ENABLED=0` forces the pure Go versions.\n\nCross-compiling needs no toolchain install: set `GOOS` and `GOARCH`.",
+      "brief": "`go build` produces a **single self-contained binary** with the runtime linked in. No interpreter, no shared libraries to match, no base image beyond what your own code needs. That property is why so much infrastructure software is written in Go.\n\nThe caveat is **cgo**. Some standard packages — notably `net` and `os/user` — have C-backed implementations that get used by default on some systems, which links against libc and breaks `FROM scratch`. `CGO_ENABLED=0` forces the pure Go versions.\n\nCross-compiling needs no toolchain install: set `GOOS` and `GOARCH`.\n\nAnd gofmt settles formatting: one layout, no options, so nothing in a Go review is ever about whitespace.",
       "examples": [
         {
           "label": "A binary that runs on an empty image",
@@ -234,20 +246,20 @@
               "Defeats the test result cache"
             ]
           ],
-          "explain": "`-count=1` is the idiomatic way to force a re-run, because Go caches successful test results and a cached pass looks identical to a real one. `-race` roughly halves speed and raises memory, so it usually runs on CI rather than on every local save."
+          "explain": "`-count=1` is the idiomatic way to force a re-run, because Go caches successful test results and a cached pass looks identical to a real one. `-race` costs roughly 5-10x memory and 2-20x execution time, which is why it usually runs on CI rather than on every local save."
         },
         {
           "id": "gofmt",
           "type": "mcq",
-          "prompt": "Why does Go have no formatting style debate?",
+          "prompt": "Your team argues about brace placement and import grouping in review. What does Go's toolchain do about that?",
           "choices": [
-            "gofmt defines one canonical format, with essentially no options",
+            "gofmt imposes one canonical layout with essentially no options, so there is nothing to argue about",
             "The compiler rejects code that is not formatted",
-            "Each module sets its own style in go.mod",
-            "The language grammar makes only one layout valid"
+            "Each module declares its preferred style in go.mod",
+            "golangci-lint ships a default style that most teams adopt"
           ],
           "answer": 0,
-          "explain": "`gofmt` has no style knobs, so there is nothing to argue about and every Go codebase looks the same. It compiles fine unformatted — the enforcement is cultural plus CI. `gofmt -l .` listing any file is the usual gate, and `goimports` does the same thing while fixing the import block."
+          "explain": "One formatter, no knobs, so every Go codebase looks the same and review time goes to the code instead. Unformatted code still compiles — enforcement is cultural plus a CI gate, usually gofmt -l . failing if it lists anything. goimports does the same job while also fixing the import block."
         }
       ]
     }

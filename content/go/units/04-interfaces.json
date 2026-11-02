@@ -217,15 +217,15 @@
         {
           "id": "any-alias",
           "type": "mcq",
-          "prompt": "What is the relationship between `any` and `interface{}`?",
+          "prompt": "A library you maintain exposes `func Do(v interface{})`. You change the signature to `any`. What breaks for the people importing it?",
           "choices": [
-            "`any` is an alias for `interface{}` — identical types, added in Go 1.18",
-            "`any` is a new type that also matches generic type parameters",
-            "`any` is an interface with no methods; `interface{}` can hold nil only",
-            "`any` is constrained to comparable types"
+            "Nothing — `any` is a true alias, so it is the same type and not an API change",
+            "Callers must update to Go 1.18 or later to compile against it",
+            "Callers passing a concrete type now need an explicit conversion",
+            "It is a breaking change, because `any` is a distinct named type"
           ],
           "answer": 0,
-          "explain": "A true alias, so they are interchangeable everywhere and `gofmt -r` can swap one for the other. It was introduced with generics because `interface{}` reads badly in a type-parameter list. Neither tells you anything about the value, so both lead to an assertion."
+          "explain": "`type any = interface{}` is an alias declaration — the `=` makes them the same type, not two types with a conversion between them. So the swap is invisible to callers and `gofmt -r 'interface{} -> any'` can do it mechanically. It arrived in Go 1.18 alongside generics, where `interface{}` read badly in a type parameter list."
         },
         {
           "id": "assert-vs-convert",
@@ -285,7 +285,7 @@
             "It prints the zero value and stops"
           ],
           "answer": 0,
-          "explain": "`%v` on a value with a `String()` method calls that method, so it calls itself until the stack overflows — `runtime: goroutine stack exceeds` and a very long trace. To print the underlying value, convert first: `fmt.Sprintf(\"%d\", int(s))`. `go vet`'s stringmethods-related checks catch some of these, but not all.",
+          "explain": "`%v` on a value with a `String()` method calls that method, so it calls itself until the stack overflows — `runtime: goroutine stack exceeds` and a very long trace. To print the underlying value, convert first: `fmt.Sprintf(\"%d\", int(s))`. `go vet`'s `printf` check catches this one — \"arg s for printf causes recursive call to String method\" — and `printf` is in the reduced set `go test` runs, so you get it for free.",
           "tag": "gotcha"
         },
         {

@@ -78,7 +78,7 @@
     {
       "id": "wrapping",
       "title": "Wrapping, Is and As",
-      "brief": "`%w` wraps an error inside another, building a **chain** that keeps the original reachable while each layer adds context.\n\n- `errors.Is(err, target)` — walks the chain looking for a specific **value**, like `os.ErrNotExist`. This is how you test for sentinels.\n- `errors.As(err, &target)` — walks the chain looking for a specific **type**, and assigns it so you can read its fields.\n\nUse these instead of `==` and a type assertion. The moment anything in the stack wraps, a direct comparison stops matching — and you will not find out until the layer that wraps is added months later.",
+      "brief": "Error wrapping — `%w` — puts an error inside another, building a **chain** that keeps the original reachable while each layer adds context.\n\n- `errors.Is(err, target)` — walks the chain looking for a specific **value**, like `os.ErrNotExist`. This is how you test for sentinels.\n- `errors.As(err, &target)` — walks the chain looking for a specific **type**, and assigns it so you can read its fields.\n\nUse these instead of `==` and a type assertion. The moment anything in the stack wraps, a direct comparison stops matching — and you will not find out until the layer that wraps is added months later.",
       "examples": [
         {
           "label": "A chain, and reading through it",

@@ -27,10 +27,10 @@
           "type": "mcq",
           "prompt": "`go doWork()` where `doWork` returns `error`. How do you get the error?",
           "choices": [
-            "Not from the go statement — send it on a channel or store it under a lock",
+            "Not from the go statement — send it on a channel or collect it under a lock",
             "Assign it: `err := go doWork()`",
-            "It is returned by the next `runtime.Gosched()` call",
-            "`go` blocks until the function returns, so it works like a normal call"
+            "Read it from the goroutine's exit status after wg.Wait()",
+            "Recover it in the parent, since a returned error surfaces as a panic"
           ],
           "answer": 0,
           "explain": "`go` is a statement, not an expression — there is nowhere for a value to go. This is the single biggest source of silently swallowed errors in Go services: work is fired off with `go`, it fails, and nothing ever learns. `errgroup.Group` exists mostly to solve this."
@@ -67,7 +67,7 @@
           "choices": [
             "A couple of KB of stack that grows on demand — tens of thousands is routine",
             "The same as an OS thread, around 1 MB — keep a pool",
-            "Nothing; goroutines are a compile-time construct",
+            "A full OS thread each, which is why a worker pool is mandatory",
             "One OS thread each, capped by GOMAXPROCS"
           ],
           "answer": 0,
@@ -78,12 +78,12 @@
     {
       "id": "channels",
       "title": "Channels",
-      "brief": "A typed pipe between goroutines, where **blocking is the point**.\n\n- **Unbuffered** (`make(chan T)`) — a rendezvous. The send completes only when a receiver takes the value; both sides wait for the other.\n- **Buffered** (`make(chan T, n)`) — the send completes while there is room, and blocks when the buffer is full.\n\nClosing is a broadcast, not a cleanup. Receives from a closed channel return the **zero value immediately**, forever; `v, ok := <-ch` sets `ok` false, and `for v := range ch` ends.\n\nOnly the sender should close, because sending on a closed channel panics and there is no way to ask whether a channel is closed.",
+      "brief": "A typed pipe between goroutines, where **blocking is the point**.\n\n- **Unbuffered** (`make(chan T)`) — a rendezvous. The send completes only when a receiver takes the value; both sides wait for the other.\n- A **buffered channel** (`make(chan T, n)`) — the send completes while there is room, and blocks when the buffer is full.\n\nClosing is a broadcast, not a cleanup. Receives from a closed channel return the **zero value immediately**, forever; `v, ok := <-ch` sets `ok` false, and `for v := range ch` ends.\n\nOnly the sender should close, because sending on a closed channel panics and there is no way to ask whether a channel is closed.",
       "examples": [
         {
           "label": "The panics, and the one that hangs",
           "lang": "go",
-          "code": "ch := make(chan int)\nclose(ch)\n\n<-ch              // fine: returns 0 immediately, forever\nv, ok := <-ch     // v == 0, ok == false\n\nch <- 1           // panic: send on closed channel\nclose(ch)         // panic: close of closed channel\n\nvar nilCh chan int\nnilCh <- 1        // blocks forever - no panic, just gone",
+          "code": "ch := make(chan int)\nclose(ch)\n\n<-ch              // fine: returns 0 immediately, forever\nv, ok := <-ch     // v == 0, ok == false\n\nch <- 1           // panic: send on closed channel\nclose(ch)         // panic: close of closed channel\n\nvar nilCh chan int\nnilCh <- 1        // blocks forever - no panic, just gone\n<-nilCh           // also blocks forever\nclose(nilCh)      // panic: close of nil channel",
           "note": "The nil channel is the quiet one: it is not an error, it simply never proceeds. A nil channel in a `select` disables that case, which is occasionally useful on purpose."
         },
         {
@@ -156,7 +156,7 @@
             "It does not compile"
           ],
           "answer": 0,
-          "explain": "Operations on a nil channel block forever. Unlike the nil map, there is no panic to tell you — the goroutine just parks and never comes back, showing up in a goroutine profile as `chan send (nil chan)`. The usual cause is a struct field nobody initialized.",
+          "explain": "Sends and receives on a nil channel block forever. Unlike the nil map there is no panic to tell you — the goroutine parks and never returns, showing up in a profile as `chan send (nil chan)`. Closing one is the exception: `close(nil)` panics with `close of nil channel`. The usual cause of all three is a struct field nobody initialized.",
           "tag": "hang"
         },
         {
@@ -304,16 +304,28 @@
           "tag": "mental model"
         },
         {
-          "id": "leak-triage-order",
-          "type": "order",
-          "prompt": "Put the triage of a suspected goroutine leak in order.",
-          "steps": [
-            "Check whether the goroutine count rises monotonically rather than with load",
-            "Pull the goroutine profile with ?debug=1 to group the stacks",
-            "Find the line where thousands of them are parked",
-            "Read what that line waits on, then find the caller that abandoned it"
+          "id": "parked-state",
+          "type": "match",
+          "prompt": "A goroutine profile groups stacks by their parked state. Match each state to the counterpart that went missing.",
+          "pairs": [
+            [
+              "chan send",
+              "No receiver — and there never will be one"
+            ],
+            [
+              "chan receive",
+              "No sender, or a channel nobody closed"
+            ],
+            [
+              "select",
+              "Every case is on a channel that is not ready"
+            ],
+            [
+              "semacquire",
+              "A mutex or WaitGroup someone else never released"
+            ]
           ],
-          "explain": "The grouping is what makes this fast: a leak is thousands of goroutines at *one* line, which is unmistakable next to the handful doing real work. The parked state — `chan send`, `chan receive`, `select`, `semacquire` — tells you which counterpart went missing."
+          "explain": "The state names the missing half, which is usually the whole diagnosis. `chan send` in bulk means receivers gave up; `semacquire` in bulk means a lock is held by something stuck. Pair it with the line number the profile groups on and you are looking at the abandoning caller within a minute."
         },
         {
           "id": "leak-shapes",
