@@ -1,0 +1,128 @@
+{
+  "id": "the-goroutine-that-never-came-back",
+  "title": "A goroutine leak that only shows up under load",
+  "subtitle": "An unbuffered send with nobody left to receive, 20,000 times over",
+  "minutes": 9,
+  "scenario": "A search endpoint calls a slow upstream and gives up after 200ms, so the user gets a 504 instead of hanging. It works. It has worked for months.\n\nThen the upstream gets slow for twenty minutes, and your pod is OOMKilled. It comes back, and is killed again. Memory climbs in a straight line and nothing in the handler looks like it allocates.\n\nThe timeout is the bug. Not because it fires, but because of what it leaves behind.",
+  "concepts": [
+    "go/concurrency/goroutines",
+    "go/concurrency/channels",
+    "go/concurrency/leaks",
+    "go/cancellation/context"
+  ],
+  "steps": [
+    {
+      "actor": "the code",
+      "title": "The handler, with its timeout",
+      "body": "A goroutine does the slow call and sends the answer down a channel. `select` takes whichever arrives first: the result, or the timeout.\n\nThe timeout branch returns 504 and the handler ends. Look at the channel declaration before moving on — that one line is the whole story.",
+      "code": {
+        "lang": "go",
+        "label": "main.go",
+        "text": "func search(w http.ResponseWriter, r *http.Request) {\n\tresults := make(chan string)\n\n\tgo func() {\n\t\tresults <- slowUpstream(r.Context())\n\t}()\n\n\tselect {\n\tcase v := <-results:\n\t\tfmt.Fprintln(w, v)\n\tcase <-time.After(200 * time.Millisecond):\n\t\thttp.Error(w, \"upstream timeout\", http.StatusGatewayTimeout)\n\t}\n}"
+      }
+    },
+    {
+      "actor": "the happy path",
+      "title": "When upstream is fast, nothing is wrong",
+      "body": "`results` is **unbuffered**, which means a send does not complete until a receiver is ready to take it. The two sides meet, hand the value over, and both continue.\n\nUpstream answers in 20ms, `case v := <-results` receives, the goroutine's send completes, the goroutine returns, everything is reclaimed. This path is clean and it is the one every test exercises.",
+      "watch": "An unbuffered channel is a rendezvous, not a queue. Both sides block until the other arrives — which is exactly why it works as synchronization."
+    },
+    {
+      "actor": "upstream",
+      "title": "Now it takes 5 seconds",
+      "body": "The 200ms timer wins the `select`. The handler writes 504 and returns. The user is served, the request is over, and the HTTP server moves on.\n\nMeanwhile the goroutine is still inside `slowUpstream`, four and a half seconds from finishing.",
+      "ask": {
+        "prompt": "The handler has returned. What happens to that goroutine when it finally tries to send its result?",
+        "choices": [
+          "It blocks forever — nobody will ever receive, and an unbuffered send needs a receiver",
+          "The send succeeds and the value is discarded",
+          "It panics, because the handler that owned the channel is gone",
+          "The runtime garbage-collects it once the channel becomes unreachable"
+        ],
+        "answer": 0,
+        "explain": "It blocks forever. The `select` moved on, so there is no receiver and there never will be. Critically, **a blocked goroutine is not garbage**: the runtime cannot collect a goroutine that might still run, and it keeps alive everything it references. The channel is unreachable from your code and entirely reachable from the goroutine parked on it."
+      }
+    },
+    {
+      "actor": "the arithmetic",
+      "title": "One leak per slow request",
+      "body": "Each timed-out request leaves one goroutine parked on a send, holding its stack, the response data it is about to send, and whatever `slowUpstream` captured.\n\nAt 100 requests a second with upstream slow, that is 100 leaked goroutines a second. Twenty minutes is 120,000. The stacks alone are hundreds of megabytes, and none of it is ever freed.",
+      "ask": {
+        "prompt": "Why does restarting the pod fix it for a while?",
+        "choices": [
+          "It clears the leaked goroutines; they rebuild only while upstream is slow",
+          "It resets the garbage collector's heap target",
+          "It reconnects to a healthier upstream replica",
+          "It does not — the leak is in the upstream, not here"
+        ],
+        "answer": 0,
+        "explain": "A restart drops everything, and the leak only accrues while the timeout branch is firing. That is what makes this so hard to catch: it is invisible in normal operation, correlates with someone *else's* latency, and \"restarting fixed it\" sends you looking in the wrong place."
+      }
+    },
+    {
+      "actor": "09:40",
+      "title": "Seeing it, instead of guessing",
+      "body": "`net/http/pprof` registers debug handlers when you import it for side effects. The goroutine profile gives you a count and, at `debug=1`, the stacks grouped by where they are parked.\n\n20,134 goroutines sitting at the same line of your own code is not ambiguous.",
+      "code": {
+        "lang": "bash",
+        "label": "on the pod",
+        "text": "$ curl -s localhost:6060/debug/pprof/goroutine?debug=1 | head -5\ngoroutine profile: total 20148\n20134 @ 0x43e5ce 0x40d1e5 0x40cdb2 0x7a1f45 0x46f281\n#       0x7a1f44        main.search.func1+0x24  /app/main.go:9"
+      },
+      "watch": "`import _ \"net/http/pprof\"` plus a listener on a debug port. `runtime.NumGoroutine()` exported as a metric is the cheap version — a steadily rising goroutine count is one of the most diagnostic numbers a Go service has."
+    },
+    {
+      "actor": "the fix",
+      "title": "Give the send somewhere to go",
+      "body": "`make(chan string, 1)` gives the channel room for exactly one value. The send completes immediately whether anyone is listening or not, the goroutine returns, and the buffered value is collected with the channel.\n\nThis is the standard shape for \"I may stop caring about this result\": a buffer of one, sized to the number of sends that can happen.",
+      "ask": {
+        "prompt": "Why does a buffer of exactly 1 fix it, rather than needing a bigger one?",
+        "choices": [
+          "Exactly one value is ever sent on this channel, so one slot can never be full",
+          "A buffer of 1 makes the channel non-blocking for all operations",
+          "Buffered channels are collected eagerly; unbuffered ones are not",
+          "It does not fully fix it; it only delays the leak"
+        ],
+        "answer": 0,
+        "explain": "The channel is created per request and exactly one goroutine sends exactly one value on it. One slot is therefore always free, the send always completes, and the goroutine always exits. Size the buffer to the number of sends, not to throughput — a buffer that can still fill up just makes the leak rarer and harder to find."
+      }
+    },
+    {
+      "actor": "the other half",
+      "title": "The work is still running",
+      "body": "The goroutine now exits, but `slowUpstream` still runs to completion — it just has nobody waiting. You have stopped the leak and are still paying for the work.\n\nThat is what **context** is for. `r.Context()` is already canceled when the client disconnects; wrapping it with `WithTimeout` gives you one signal that means \"stop\", and passing it down lets the HTTP call, the database query and everything below actually abandon the work.",
+      "code": {
+        "lang": "go",
+        "label": "both halves fixed",
+        "text": "func search(w http.ResponseWriter, r *http.Request) {\n\t// room for one value, so the send never blocks\n\tresults := make(chan string, 1)\n\n\tctx, cancel := context.WithTimeout(r.Context(), 200*time.Millisecond)\n\tdefer cancel()\n\n\tgo func() {\n\t\tresults <- slowUpstream(ctx)\n\t}()\n\n\tselect {\n\tcase v := <-results:\n\t\tfmt.Fprintln(w, v)\n\tcase <-ctx.Done():\n\t\thttp.Error(w, \"upstream timeout\", http.StatusGatewayTimeout)\n\t}\n}"
+      },
+      "ask": {
+        "prompt": "`defer cancel()` — what breaks if you leave it out?",
+        "choices": [
+          "The context and its timer are retained until the deadline passes — another leak",
+          "Nothing; the context is collected when the handler returns",
+          "The timeout never fires",
+          "The parent context is canceled instead"
+        ],
+        "answer": 0,
+        "explain": "`WithTimeout` registers the child with its parent and starts a timer. Calling `cancel` releases both immediately; skipping it holds them until the deadline, which on a long-lived parent is a slow leak of its own. `go vet`'s lostcancel check finds exactly this, and it is why the `defer cancel()` line is non-negotiable."
+      }
+    },
+    {
+      "actor": "the rule",
+      "title": "Every goroutine needs a known exit",
+      "body": "The generalization is worth more than this bug: **when you write `go`, say how it ends.**\n\nA goroutine ends when its function returns. If the function's last act is a channel operation, then whether it ever returns depends on someone else still being there — and \"someone else\" is usually a handler that has already given up.\n\nThe three reliable shapes: buffer the channel so the send cannot block; select on `ctx.Done()` so it can abandon; or have the receiver guarantee it will receive.",
+      "watch": "`go test -race` will not find this — nothing races. Leaks need either the goroutine profile or a package like `go.uber.org/goleak` in tests, which fails a test that finishes with goroutines still running."
+    },
+    {
+      "actor": "the checklist",
+      "title": "What to look at, in order",
+      "body": "When a Go service grows memory without an obvious allocation:\n\n- **Goroutine count first.** `runtime.NumGoroutine()` or the pprof profile. Rising monotonically is a leak, not pressure.\n- **Group the stacks.** `?debug=1` buckets them, and a leak shows as thousands parked at one line.\n- **Read what that line is waiting on.** `chan send`, `chan receive`, `select`, `semacquire` — each names the thing that has no counterpart.\n- **Find the abandoning caller.** Something returned early and left a partner behind: a timeout, an error return, a client disconnect."
+    }
+  ],
+  "takeaways": [
+    "A blocked goroutine is never collected, and it keeps everything it references alive.",
+    "An unbuffered send needs a receiver that is still there — a timeout removes the receiver, not the sender.",
+    "Buffer a result channel to the number of sends when the receiver is allowed to give up.",
+    "A steadily rising goroutine count is the most diagnostic number a Go service has; -race will not find a leak."
+  ]
+}

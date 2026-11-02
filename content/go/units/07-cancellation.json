@@ -1,0 +1,269 @@
+{
+  "id": "cancellation",
+  "title": "select, context and cancellation",
+  "summary": "Waiting on several things at once, and telling a whole call tree to stop.",
+  "concepts": [
+    {
+      "id": "select",
+      "title": "select",
+      "brief": "`select` waits on several channel operations and proceeds with whichever is ready first.\n\n- If **several** are ready it picks one **uniformly at random**, not in source order. You cannot give a case priority.\n- A `default` case makes the whole thing **non-blocking**: if nothing is ready, `default` runs immediately.\n- A **nil** channel in a case is never ready, which disables that case. That is a real technique — set a channel variable to nil to switch its branch off.\n\n`select {}` with no cases blocks forever, and in a program with nothing else running that is an instant deadlock.",
+      "examples": [
+        {
+          "label": "Work or quit",
+          "lang": "go",
+          "code": "for {\n\tselect {\n\tcase job := <-jobs:\n\t\tprocess(job)\n\tcase <-ctx.Done():\n\t\treturn ctx.Err()\n\t}\n}",
+          "note": "The canonical worker loop. Every long-running goroutine should have a case that lets it leave."
+        },
+        {
+          "label": "Non-blocking, with default",
+          "lang": "go",
+          "code": "select {\ncase v := <-ch:\n\tuse(v)\ndefault:\n\t// nothing waiting; carry on rather than block\n}\n\n// and a non-blocking send, for a channel you are happy to drop from\nselect {\ncase metrics <- sample:\ndefault:\n\tdropped++\n}",
+          "note": "The non-blocking send is how you keep a slow consumer from applying backpressure to the thing you are measuring."
+        }
+      ],
+      "items": [
+        {
+          "id": "select-random",
+          "type": "mcq",
+          "prompt": "Two cases in a `select` are both ready. Which runs?",
+          "choices": [
+            "One at random, chosen uniformly — source order means nothing",
+            "The first one in source order",
+            "The one whose channel has been ready longest",
+            "Both, in source order"
+          ],
+          "answer": 0,
+          "explain": "Uniformly at random, deliberately, so nobody can write code that depends on an ordering the language never promised — and so a busy channel cannot starve a quiet one. If you genuinely need priority, check the high-priority channel first in its own non-blocking `select` with a `default`."
+        },
+        {
+          "id": "select-default",
+          "type": "mcq",
+          "prompt": "You add `default:` to a `select` inside a `for` loop, with nothing else in the body.",
+          "choices": [
+            "It becomes a busy loop, spinning at full CPU when no channel is ready",
+            "It blocks as before; default only applies to sends",
+            "It sleeps until a channel becomes ready",
+            "It does not compile — default needs at least one other case"
+          ],
+          "answer": 0,
+          "explain": "`default` means \"never block\", so the loop spins as fast as the CPU allows and burns a whole core doing nothing. `default` is for a single poll — a non-blocking send or a quick check — not for the normal path of a loop. A loop should block in `select` and let the scheduler wake it.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "select-nil-case",
+          "type": "mcq",
+          "prompt": "One of your `select` cases reads from a channel variable that is currently nil.",
+          "choices": [
+            "That case is never ready, so it is effectively disabled",
+            "The select panics on a nil channel",
+            "That case is always ready and yields the zero value",
+            "The select falls through to default immediately"
+          ],
+          "answer": 0,
+          "explain": "A nil channel is never ready, so the case is silently switched off. This is used on purpose: in a loop that drains one channel then another, setting the finished one to nil removes it from contention without restructuring the `select`. It is also how a forgotten initialization becomes a branch that never fires."
+        },
+        {
+          "id": "select-match",
+          "type": "match",
+          "prompt": "Match each select shape to what it does.",
+          "pairs": [
+            [
+              "select with only channel cases",
+              "Blocks until one of them is ready"
+            ],
+            [
+              "select with a default",
+              "Never blocks; runs default if nothing is ready"
+            ],
+            [
+              "select {}",
+              "Blocks forever"
+            ],
+            [
+              "a case on a nil channel",
+              "Never ready, so disabled"
+            ]
+          ],
+          "explain": "`select {}` appears in real code as a way to park `main` forever while background goroutines serve — though a `<-ctx.Done()` or an `http.ListenAndServe` is usually better, because it can actually end."
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "context",
+      "brief": "A `context.Context` carries one signal down a call tree: **stop**. Cancel the parent and every context derived from it is canceled too, all the way down.\n\n- `ctx.Done()` is a channel that is **closed** on cancellation — closing is a broadcast, so every goroutine selecting on it wakes at once.\n- `ctx.Err()` says why: `context.Canceled` or `context.DeadlineExceeded`.\n\nThe conventions are strong enough to treat as rules: context is the **first parameter**, named `ctx`; you do not store one in a struct; and `WithCancel`, `WithTimeout` and `WithDeadline` all return a `cancel` function that you must call, normally with `defer cancel()`, even when the work finished on time.",
+      "examples": [
+        {
+          "label": "Deriving one, and respecting it",
+          "lang": "go",
+          "code": "ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)\ndefer cancel()                 // ALWAYS, even on the happy path\n\nreq, _ := http.NewRequestWithContext(ctx, \"GET\", url, nil)\nresp, err := http.DefaultClient.Do(req)\nif err != nil {\n\tif errors.Is(err, context.DeadlineExceeded) {\n\t\treturn fmt.Errorf(\"upstream too slow: %w\", err)\n\t}\n\treturn err\n}",
+          "note": "`r.Context()` is already canceled when the client disconnects, so deriving from it means a user hitting stop also stops your upstream call."
+        },
+        {
+          "label": "A goroutine that can be told to stop",
+          "lang": "go",
+          "code": "func worker(ctx context.Context, jobs <-chan Job) error {\n\tfor {\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\tcase j, ok := <-jobs:\n\t\t\tif !ok {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\tif err := handle(ctx, j); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t}\n}",
+          "note": "`jobs <-chan Job` is a receive-only parameter: the compiler then stops this function sending or closing it."
+        }
+      ],
+      "items": [
+        {
+          "id": "done-closed",
+          "type": "mcq",
+          "prompt": "How does `ctx.Done()` wake every goroutine waiting on it at the same time?",
+          "choices": [
+            "It is a channel that gets closed, and a close unblocks every receiver at once",
+            "Each caller gets its own channel and a value is sent to each",
+            "The runtime interrupts goroutines registered with the context",
+            "Callers poll ctx.Err() on a timer"
+          ],
+          "answer": 0,
+          "explain": "Closing is a broadcast: every pending receive returns immediately, and any later receive returns immediately too. Sending one value would only wake one waiter, which is why cancellation is built on close rather than on a send."
+        },
+        {
+          "id": "lost-cancel",
+          "type": "mcq",
+          "prompt": "You call `context.WithTimeout` and never call the returned `cancel`, but the work finishes quickly.",
+          "choices": [
+            "The context and its timer are retained until the deadline — a leak go vet can find",
+            "Nothing is wrong; cancel matters only when you want to abort early",
+            "The parent context is canceled when the child is collected",
+            "The next WithTimeout on the same parent panics"
+          ],
+          "answer": 0,
+          "explain": "`WithTimeout` attaches the child to the parent and arms a timer; `cancel` detaches and stops both. Skipping it holds them until the deadline passes, which on a long-lived parent accumulates. `go vet`'s lostcancel check catches it — note it is not in the reduced set `go test` runs, so you need to run vet yourself.",
+          "tag": "leak"
+        },
+        {
+          "id": "ctx-err-match",
+          "type": "match",
+          "prompt": "Match each situation to what `ctx.Err()` returns.",
+          "pairs": [
+            [
+              "Nothing has happened yet",
+              "nil"
+            ],
+            [
+              "Someone called cancel()",
+              "context.Canceled"
+            ],
+            [
+              "The timeout expired",
+              "context.DeadlineExceeded"
+            ],
+            [
+              "The client disconnected mid-request",
+              "context.Canceled"
+            ]
+          ],
+          "explain": "Worth distinguishing in logs: `DeadlineExceeded` means *you* ran out of patience and is a signal about the dependency, while `Canceled` usually means the caller left and is not your problem to fix. Test with `errors.Is`, since the error is normally wrapped by the time you see it."
+        },
+        {
+          "id": "ctx-first-param",
+          "type": "multi",
+          "prompt": "Which of these follow the standard context conventions?",
+          "choices": [
+            "`func Fetch(ctx context.Context, url string) error`",
+            "Calling `defer cancel()` immediately after WithTimeout",
+            "Storing the ctx in a struct field for later use",
+            "Passing `context.Background()` from deep inside a request handler"
+          ],
+          "answers": [
+            0,
+            1
+          ],
+          "explain": "First parameter, named `ctx`, and always cancel. Storing one in a struct is explicitly discouraged by the context documentation — it outlives the operation it describes. And using `Background()` inside a handler severs the chain, so a client disconnect or a parent timeout no longer reaches that call: it is exactly how work outlives the request that asked for it."
+        },
+        {
+          "id": "ctx-propagate-order",
+          "type": "order",
+          "prompt": "A client disconnects mid-request. Put the cancellation in order.",
+          "steps": [
+            "net/http cancels the request's context",
+            "The Done channel of that context is closed",
+            "Every context derived from it is canceled too",
+            "Each goroutine selecting on Done unblocks and returns ctx.Err()"
+          ],
+          "explain": "Cancellation flows strictly downward through contexts derived from the one that was canceled — never upward or sideways. That is why deriving from `r.Context()` rather than `context.Background()` is what makes a disconnect actually stop your database query."
+        }
+      ]
+    },
+    {
+      "id": "timeouts",
+      "title": "Timeouts that actually fire",
+      "brief": "A timeout only works if the thing you are waiting on can be **interrupted**. Selecting on a timer tells *you* to stop waiting; it does nothing to the work.\n\nThat is the difference between `time.After` in a `select` and a context deadline threaded into the call. The first abandons the result. The second abandons the work.\n\nFor HTTP specifically: `http.Client.Timeout` covers the whole exchange including reading the body, while a context deadline is per-request and composes with everything else. The default `http.Client` and `http.DefaultTransport` have **no overall timeout**, which is how a hung upstream becomes a hung service.",
+      "examples": [
+        {
+          "label": "Abandoning the result versus abandoning the work",
+          "lang": "go",
+          "code": "// stops waiting; the call keeps running and still costs you\nselect {\ncase v := <-done:\n\tuse(v)\ncase <-time.After(2 * time.Second):\n\treturn ErrTimeout\n}\n\n// stops the work: the HTTP request is actually aborted\nctx, cancel := context.WithTimeout(ctx, 2*time.Second)\ndefer cancel()\nreq, _ := http.NewRequestWithContext(ctx, \"GET\", url, nil)",
+          "note": "Both return after two seconds. Only the second one stops the upstream call, closes the connection, and frees the goroutine doing it."
+        },
+        {
+          "label": "A client you would actually deploy",
+          "lang": "go",
+          "code": "var client = &http.Client{\n\tTimeout: 10 * time.Second,   // whole exchange, including the body\n}",
+          "note": "`http.DefaultClient` has no timeout at all. A single unresponsive upstream can hold every request goroutine open indefinitely."
+        }
+      ],
+      "items": [
+        {
+          "id": "timer-vs-ctx",
+          "type": "mcq",
+          "prompt": "You wrap a slow HTTP call in a `select` with `time.After(2s)`. After the timeout fires, what is the upstream request doing?",
+          "choices": [
+            "Still running — the timer only stopped you waiting for it",
+            "Canceled; the select aborts the pending operation",
+            "Canceled, but only if the client has KeepAlives disabled",
+            "Still running, but the runtime reclaims its connection immediately"
+          ],
+          "answer": 0,
+          "explain": "The request runs to completion, holding a connection and a goroutine, and its result is thrown away. A timer is a decision about *your* waiting. To stop the work you must hand a cancelable context into the thing doing it — `http.NewRequestWithContext`, or a `QueryContext` for a database.",
+          "tag": "mental model"
+        },
+        {
+          "id": "default-client",
+          "type": "mcq",
+          "prompt": "What is the request timeout on `http.DefaultClient`?",
+          "choices": [
+            "None — it waits indefinitely unless you set Timeout or use a context",
+            "30 seconds",
+            "10 seconds, from DefaultTransport",
+            "It inherits the server's ReadTimeout"
+          ],
+          "answer": 0,
+          "explain": "No timeout whatsoever. An upstream that accepts your connection and then says nothing will hold a goroutine forever, and under load that is the whole service. Always construct your own `http.Client` with a `Timeout`, and derive a per-request context on top of it.",
+          "tag": "production"
+        },
+        {
+          "id": "timeout-fill",
+          "type": "fill",
+          "prompt": "Which `http` function builds a request that carries a context, so a deadline can abort it?",
+          "accept": [
+            "http.NewRequestWithContext",
+            "NewRequestWithContext"
+          ],
+          "placeholder": "function",
+          "explain": "`http.NewRequestWithContext(ctx, method, url, body)`. The older `http.NewRequest` makes a request with no context, so no deadline you set anywhere else can reach it. If you see `NewRequest` in a service, it is usually a timeout that silently does not apply."
+        },
+        {
+          "id": "timeout-layers",
+          "type": "multi",
+          "prompt": "A request to your service should be bounded end to end. Which of these actually bound something?",
+          "choices": [
+            "http.Server's ReadTimeout and WriteTimeout, for the inbound request",
+            "An http.Client Timeout, for each outbound call",
+            "A context deadline derived from r.Context(), threaded into every call",
+            "A `select` on time.After around the handler body"
+          ],
+          "answers": [
+            0,
+            1,
+            2
+          ],
+          "explain": "The first three bound real work at a real boundary. The fourth only bounds how long you *watch* — the handler's goroutine returns while everything it started keeps going, which is the leak pattern. Bound work where the work happens."
+        }
+      ]
+    }
+  ]
+}
