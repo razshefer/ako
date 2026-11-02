@@ -43,7 +43,7 @@ export function mdInline(src) {
   return md(src).replace(/^<p>/, '').replace(/<\/p>$/, '');
 }
 
-/* ---------- naive syntax tint for yaml / bash / logs ---------- */
+/* ---------- naive syntax tint for yaml / bash / go / logs ---------- */
 export function codeBlock(code, lang = 'text', label = null, note = null) {
   const raw = esc(code);
   let out = raw;
@@ -57,6 +57,18 @@ export function codeBlock(code, lang = 'text', label = null, note = null) {
     out = raw
       .replace(/^(\s*#.*)$/gm, '<span class="cmt">$1</span>')
       .replace(/^(\$ )/gm, '<span class="pr">$1</span>');
+  } else if (lang === 'go') {
+    // One pass with alternation rather than three passes, so each character is
+    // consumed once: a keyword inside a comment or a string is swallowed by the
+    // earlier alternative instead of being tinted inside it. Raw strings use
+    // backticks, which is also how struct tags are written.
+    out = raw.replace(
+      /(\/\/[^\n]*)|(&quot;[^&\n]*&quot;|`[^`\n]*`)|\b(func|package|import|type|struct|interface|map|chan|go|defer|return|if|else|for|range|switch|case|default|select|var|const|nil|make|append|len|cap|new|true|false|string|int|int64|int32|bool|byte|rune|error)\b/g,
+      (m, cmt, str, kw) =>
+        cmt ? `<span class="cmt">${cmt}</span>`
+          : str ? `<span class="str">${str}</span>`
+            : `<span class="key">${kw}</span>`
+    );
   } else if (lang === 'log') {
     out = raw
       .replace(/\b(E\d{4}|ERROR|FATAL|Failed|failed|Error)\b/g, '<span class="num">$1</span>')
