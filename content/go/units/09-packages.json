@@ -1,0 +1,267 @@
+{
+  "id": "packages",
+  "title": "Packages, modules and the toolchain",
+  "summary": "How code is organized, how versions are chosen, and the commands worth knowing.",
+  "concepts": [
+    {
+      "id": "packages",
+      "title": "Packages and imports",
+      "brief": "A package is a **directory**. Every file in it declares the same `package` name, and they share one namespace — no imports between files of the same package, and an unexported identifier is visible across all of them.\n\n**Import cycles are a hard compile error.** Two packages cannot import each other, even indirectly. That forces a layered design and is one of the stronger opinions in the language.\n\nAn internal package — a directory named **`internal`** — is special: only code rooted at its parent can import it. It is the one real access control Go has above the exported/unexported line, and it is enforced by the compiler.",
+      "examples": [
+        {
+          "label": "internal is enforced, not a convention",
+          "lang": "text",
+          "code": "github.com/you/app/\n  main.go                  -> can import internal/db\n  internal/\n    db/db.go               -> importable only within github.com/you/app/...\n  pkg/\n    client/client.go       -> importable by anyone",
+          "note": "Someone else importing `github.com/you/app/internal/db` gets a compile error. It is how you publish a module without freezing its guts as public API."
+        },
+        {
+          "label": "init(), and when it runs",
+          "lang": "go",
+          "code": "var registry = map[string]Driver{}   // 1. package vars initialized\n\nfunc init() {                        // 2. init() runs\n\tregistry[\"pg\"] = pgDriver{}\n}\n\nfunc main() {                        // 3. then main\n\t// imported packages are fully initialized before this point\n}",
+          "note": "Dependencies initialize first, depth-first. `import _ \"net/http/pprof\"` imports a package purely so its `init()` registers HTTP handlers."
+        }
+      ],
+      "items": [
+        {
+          "id": "import-cycle",
+          "type": "mcq",
+          "prompt": "Package `a` imports `b`, and you add an import of `a` to `b`.",
+          "code": {
+            "lang": "log",
+            "label": "go build",
+            "text": "import cycle not allowed"
+          },
+          "choices": [
+            "A compile error — cycles are forbidden, however indirect",
+            "It compiles; the linker resolves the cycle",
+            "It compiles with a vet warning",
+            "It compiles only if one of them uses an interface"
+          ],
+          "answer": 0,
+          "explain": "Hard error, and it is the constraint that shapes Go project layout most. The usual resolutions: move the shared type into a third package that both import, or define an interface in the consumer so the dependency only points one way. Reaching for the second one is how most Go code ends up testable."
+        },
+        {
+          "id": "internal-rule",
+          "type": "mcq",
+          "prompt": "Who can import `github.com/you/app/internal/db`?",
+          "choices": [
+            "Only code under github.com/you/app/",
+            "Anyone — internal is a naming convention only",
+            "Only files in the same directory",
+            "Only the main package of that module"
+          ],
+          "answer": 0,
+          "explain": "Anything rooted at `internal`'s parent, enforced by the compiler. This is how you publish a library without every helper becoming public API you can never change. If you are unsure whether to export something, putting it in `internal` keeps the option open."
+        },
+        {
+          "id": "package-files",
+          "type": "mcq",
+          "prompt": "Two files in the same directory, same `package store`. Does `a.go` need to import `b.go` to call its unexported function?",
+          "choices": [
+            "No — files in one package share a namespace; imports are per-package",
+            "Yes, with a relative import",
+            "Yes, and the function must be exported",
+            "Only if they are compiled separately"
+          ],
+          "answer": 0,
+          "explain": "The package is the unit, not the file. Splitting a package across files is purely organizational, and unexported identifiers are visible to all of them. There are no relative imports in Go, and no way to import one file from another."
+        },
+        {
+          "id": "init-order",
+          "type": "order",
+          "prompt": "Put the startup of a Go program in order, for one package that imports another.",
+          "steps": [
+            "The imported package is initialized first, depth-first through its own imports",
+            "This package's package-level variables are initialized",
+            "This package's init() functions run",
+            "main() is called"
+          ],
+          "explain": "Dependencies are fully initialized before anything that imports them runs, which is what makes a blank import reliable: by the time `main` starts, that driver has already registered itself. A package may have several `init()` functions, including across files, so do not rely on ordering between them — if two must happen in sequence, call one from the other."
+        },
+        {
+          "id": "blank-import",
+          "type": "mcq",
+          "prompt": "What does `import _ \"github.com/lib/pq\"` accomplish, when nothing in your code names `pq`?",
+          "choices": [
+            "Its init() registers the \"postgres\" driver with database/sql",
+            "It imports it lazily, only if a query needs it",
+            "It suppresses the unused-import error for a package you plan to use",
+            "It makes the package's types available without qualifying them"
+          ],
+          "answer": 0,
+          "explain": "A blank import is for side effects: you want the package's `init()` to run and have no need to name anything in it. `database/sql` has no idea what Postgres is — the driver registers itself on import, which is why `sql.Open(\"postgres\", ...)` then works. It is also why deleting an import that \"isn't used\" can break a program at runtime."
+        }
+      ]
+    },
+    {
+      "id": "modules",
+      "title": "Modules and versions",
+      "brief": "A module is a tree of packages with a `go.mod` at its root declaring the module path, the language version, and its requirements.\n\nGo picks versions by **Minimal Version Selection**: for each dependency it takes the **highest version anyone explicitly asked for**, and nothing newer. There is no solver and no floating range, so a build is reproducible without a lockfile — `go.sum` holds checksums for verification, not version choices.\n\n**Major versions are part of the import path.** v2 and above append `/v2`, so `example.com/lib` and `example.com/lib/v2` are different packages that can coexist in one build.",
+      "examples": [
+        {
+          "label": "go.mod",
+          "lang": "text",
+          "code": "module github.com/you/app\n\ngo 1.22\n\nrequire (\n\tgithub.com/go-chi/chi/v5 v5.0.12\n\tgolang.org/x/sync v0.7.0\n)",
+          "note": "The `go` directive is not just metadata: it selects language semantics, which is how the Go 1.22 loop-variable change could ship without breaking old modules."
+        },
+        {
+          "label": "The commands that edit it",
+          "lang": "bash",
+          "code": "$ go mod init github.com/you/app   # create it\n$ go get example.com/lib@v1.4.0    # add or change a requirement\n$ go mod tidy                      # add what is used, drop what is not\n$ go mod why example.com/lib       # why is this here at all",
+          "note": "`go mod tidy` is the one to run before committing: it reconciles go.mod and go.sum with what the code actually imports."
+        }
+      ],
+      "items": [
+        {
+          "id": "mvs",
+          "type": "mcq",
+          "prompt": "Your module needs lib v1.2.0. A dependency needs lib v1.4.0. v1.9.0 exists. Which is built?",
+          "choices": [
+            "v1.4.0 — the highest version explicitly required by anyone",
+            "v1.9.0 — the latest compatible release",
+            "v1.2.0 — your own requirement wins",
+            "The build fails with a version conflict"
+          ],
+          "answer": 0,
+          "explain": "Minimal Version Selection takes the maximum of the *requested* versions and never upgrades on its own. So adding a dependency cannot silently move your other dependencies forward, and a build today produces the same binary as a build last year. Upgrades only happen when you run `go get`.",
+          "tag": "mental model"
+        },
+        {
+          "id": "major-path",
+          "type": "mcq",
+          "prompt": "A library releases v2.0.0. What changes for you?",
+          "choices": [
+            "The import path gains a /v2 suffix — it is effectively a different package",
+            "Nothing; go.mod records the major version",
+            "You must delete go.sum and re-resolve",
+            "Go refuses v2+ unless you opt in with GOFLAGS"
+          ],
+          "answer": 0,
+          "explain": "Semantic import versioning: the major version lives in the path. The upside is that two incompatible majors can coexist in one build, so a dependency upgrading to v2 does not force you to. The cost is that upgrading means editing every import line — which `go mod tidy` will not do for you."
+        },
+        {
+          "id": "gosum",
+          "type": "mcq",
+          "prompt": "CI fails with `missing go.sum entry`, though the build works on your machine. What does that tell you?",
+          "choices": [
+            "go.sum is out of date with go.mod — run go mod tidy and commit the result",
+            "A dependency has been yanked from the proxy",
+            "Your Go version is older than the one in the go directive",
+            "The module cache on the CI runner is corrupt"
+          ],
+          "answer": 0,
+          "explain": "`go.sum` holds a checksum for every module in the build graph. It is not a lockfile — `go.mod` plus minimal version selection already decides versions — it exists so a module whose contents changed under a tag you already use is detected rather than silently built. Your machine passes because the hashes are already in your local cache. Commit `go.sum`, always."
+        },
+        {
+          "id": "mod-match",
+          "type": "match",
+          "prompt": "Match each command to what it does.",
+          "pairs": [
+            [
+              "go mod init",
+              "Create go.mod for a new module"
+            ],
+            [
+              "go mod tidy",
+              "Sync requirements with what the code imports"
+            ],
+            [
+              "go get pkg@v1.4.0",
+              "Add or change one requirement"
+            ],
+            [
+              "go mod why pkg",
+              "Explain which import pulls it in"
+            ]
+          ],
+          "explain": "`go mod why` is the one people forget, and it is what you want when `go.mod` has grown something nobody recognizes — it prints the import chain from your code to that module."
+        }
+      ]
+    },
+    {
+      "id": "toolchain",
+      "title": "The toolchain and the binary",
+      "brief": "`go build` produces a **single self-contained binary** with the runtime linked in. No interpreter, no shared libraries to match, no base image beyond what your own code needs. That property is why so much infrastructure software is written in Go.\n\nThe caveat is **cgo**. Some standard packages — notably `net` and `os/user` — have C-backed implementations that get used by default on some systems, which links against libc and breaks `FROM scratch`. `CGO_ENABLED=0` forces the pure Go versions.\n\nCross-compiling needs no toolchain install: set `GOOS` and `GOARCH`.\n\nAnd gofmt settles formatting: one layout, no options, so nothing in a Go review is ever about whitespace.",
+      "examples": [
+        {
+          "label": "A binary that runs on an empty image",
+          "lang": "bash",
+          "code": "$ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o app .\n\n$ cat Dockerfile\nFROM scratch\nCOPY app /app\nENTRYPOINT [\"/app\"]",
+          "note": "Without CGO_ENABLED=0 this can fail at runtime with 'no such file or directory' — which is the dynamic loader missing, not your binary."
+        },
+        {
+          "label": "The commands worth muscle memory",
+          "lang": "bash",
+          "code": "$ go test ./...            # every package\n$ go test -race ./...      # with the race detector\n$ go test -run TestFoo     # one test by regex\n$ go vet ./...             # the checks the compiler does not do\n$ gofmt -l .               # list files that are not formatted",
+          "note": "`go test` runs a reduced set of vet checks first, so `go vet ./...` separately in CI is still worth it."
+        }
+      ],
+      "items": [
+        {
+          "id": "cgo-scratch",
+          "type": "mcq",
+          "prompt": "Your Go binary works locally, and in a `FROM scratch` image it exits with 'no such file or directory' — though the binary is clearly there.",
+          "choices": [
+            "It was built with cgo, so it needs a dynamic loader the image does not have",
+            "The binary was built for the wrong GOARCH",
+            "scratch images cannot run ENTRYPOINT without a shell",
+            "The binary needs the execute bit set"
+          ],
+          "answer": 0,
+          "explain": "That message is the kernel failing to find the *interpreter* named in the ELF header, not the binary. A cgo build links dynamically against libc, which `scratch` does not have. Build with `CGO_ENABLED=0`, or use a base image with libc. `file app` or `ldd app` tells you which kind you have.",
+          "tag": "production"
+        },
+        {
+          "id": "cross-compile-fill",
+          "type": "fill",
+          "prompt": "Which two environment variables select the target platform for `go build`?",
+          "accept": [
+            "GOOS and GOARCH",
+            "GOOS GOARCH",
+            "GOOS, GOARCH",
+            "GOOS/GOARCH"
+          ],
+          "placeholder": "two variables",
+          "explain": "`GOOS` and `GOARCH`. Cross-compiling needs nothing installed — `GOOS=linux GOARCH=arm64 go build` works from a Mac with no container. That falls apart the moment cgo is involved, which is another reason `CGO_ENABLED=0` is the common default in CI."
+        },
+        {
+          "id": "test-flags-match",
+          "type": "match",
+          "prompt": "Match each go test flag to what it does.",
+          "pairs": [
+            [
+              "-race",
+              "Instruments memory access to find data races"
+            ],
+            [
+              "-run TestFoo",
+              "Runs only tests matching a regex"
+            ],
+            [
+              "-bench .",
+              "Runs benchmarks as well as tests"
+            ],
+            [
+              "-count=1",
+              "Defeats the test result cache"
+            ]
+          ],
+          "explain": "`-count=1` is the idiomatic way to force a re-run, because Go caches successful test results and a cached pass looks identical to a real one. `-race` costs roughly 5-10x memory and 2-20x execution time, which is why it usually runs on CI rather than on every local save."
+        },
+        {
+          "id": "gofmt",
+          "type": "mcq",
+          "prompt": "Your team argues about brace placement and import grouping in review. What does Go's toolchain do about that?",
+          "choices": [
+            "gofmt imposes one canonical layout with essentially no options, so there is nothing to argue about",
+            "The compiler rejects code that is not formatted",
+            "Each module declares its preferred style in go.mod",
+            "golangci-lint ships a default style that most teams adopt"
+          ],
+          "answer": 0,
+          "explain": "One formatter, no knobs, so every Go codebase looks the same and review time goes to the code instead. Unformatted code still compiles — enforcement is cultural plus a CI gate, usually gofmt -l . failing if it lists anything. goimports does the same job while also fixing the import block."
+        }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 # Ako — working notes for Claude
 
 Phone-first spaced-repetition learning app. Vanilla ES modules, JSON content,
-**no build step**. Ships with a Kubernetes/RKE2/Rancher pack.
+**no build step**. Ships with a Kubernetes/RKE2/Rancher pack and a Go pack.
 
 Read this first, then [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before
 touching `app/js/`, or [AUTHORING.md](AUTHORING.md) before touching `content/`.

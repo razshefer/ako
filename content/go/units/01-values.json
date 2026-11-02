@@ -1,0 +1,357 @@
+{
+  "id": "values",
+  "title": "Values and zero values",
+  "summary": "Declarations, the zero value, and why Go refuses to convert anything for you.",
+  "concepts": [
+    {
+      "id": "declarations",
+      "title": "Declaring things",
+      "brief": "Three forms, and the rules about where each one works:\n\n- `var x int` — works anywhere, including at package level. Gives `x` its **zero value**.\n- `x := 0` — short declaration. **Functions only.** Infers the type.\n- `const x = 0` — compile-time constant, and often *untyped*, which is why `const big = 1 << 40` can be used as an `int64` or a `float64` without a cast.\n\nGo is strict about waste: an unused **local variable** or an unused **import** is a compile error, not a warning. Unused package-level variables and unused struct fields are fine.",
+      "examples": [
+        {
+          "label": "The forms",
+          "lang": "go",
+          "code": "var count int          // 0\nvar name = \"billing\"   // type inferred, string\nname2 := \"billing\"     // same, but only inside a function\n\nconst retries = 3      // untyped constant\nconst timeout = 5 * time.Second\n\nvar (\n\thost = \"localhost\"\n\tport = 8080\n)",
+          "note": "The grouped `var (...)` block is the normal way to declare several package-level variables."
+        },
+        {
+          "label": "Strictness you will meet in the first hour",
+          "lang": "log",
+          "code": "./main.go:4:2: \"os\" imported and not used",
+          "note": "This is a build failure. It is why Go tooling auto-removes imports on save — `goimports` exists because the compiler will not let it slide."
+        }
+      ],
+      "items": [
+        {
+          "id": "short-decl-scope",
+          "type": "mcq",
+          "prompt": "You write `timeout := 30` at the top of a file, outside any function. What happens?",
+          "choices": [
+            "It does not compile — `:=` only works inside a function",
+            "It compiles; `:=` and `var` are interchangeable",
+            "It compiles but the variable is unexported and unusable",
+            "It compiles with a vet warning about package-level inference"
+          ],
+          "answer": 0,
+          "explain": "Syntax error. At package level every declaration starts with a keyword — `var`, `const`, `func`, `type`. `:=` is function-scoped only. Use `var timeout = 30`, which infers the type the same way."
+        },
+        {
+          "id": "unused-import",
+          "type": "multi",
+          "prompt": "An unused import is a compile error. Which of these are *also* compile errors?",
+          "choices": [
+            "A local variable that is declared and never used",
+            "An import that is never referenced",
+            "A package-level variable that is never used",
+            "A struct field that is never read or written"
+          ],
+          "explain": "Only locals and imports. Both are nearly always leftovers from an edit you did not finish, which is the case for making them fatal. Package-level variables and struct fields are exempt, because they are routinely part of an API that nothing in this package happens to touch. `goimports` exists because the import half of the rule is otherwise relentless.",
+          "tag": "compiler",
+          "answers": [
+            0,
+            1
+          ]
+        },
+        {
+          "id": "untyped-const",
+          "type": "mcq",
+          "prompt": "`const ratio = 3` — which of these lines compiles?",
+          "code": {
+            "lang": "go",
+            "label": "both?",
+            "text": "const ratio = 3\n\nvar a float64 = ratio\nvar b int = ratio"
+          },
+          "choices": [
+            "Both — an untyped constant takes the type of its context",
+            "Only `b`, because 3 is an integer literal",
+            "Only `a`, because untyped constants default to float64",
+            "Neither without an explicit conversion"
+          ],
+          "answer": 0,
+          "explain": "Both. An untyped constant has no type until it is used, so it adapts to whatever is needed and is checked for overflow at compile time. Write `const ratio int = 3` and `a` stops compiling — adding the type is what loses you the flexibility."
+        },
+        {
+          "id": "var-keyword-fill",
+          "type": "fill",
+          "prompt": "`timeout := 30` does not compile at package level. Rewrite the whole line so it does.",
+          "accept": [
+            "var timeout = 30",
+            "var timeout int = 30"
+          ],
+          "placeholder": "the line",
+          "explain": "`var`. Worth internalizing the set of things that can start a line at package level: `package`, `import`, `var`, `const`, `type`, `func`. Nothing else, which is why a stray `:=` there is a syntax error rather than a scoping mistake."
+        }
+      ]
+    },
+    {
+      "id": "zero-values",
+      "title": "The zero value",
+      "brief": "Go has no uninitialized memory. Every variable you declare without a value gets its type's **zero value**, deterministically.\n\n- Numbers → `0`\n- `string` → `\"\"` (empty, never nil — strings cannot be nil)\n- `bool` → `false`\n- Pointer, slice, map, channel, function, interface → `nil`\n- A struct → every field set to *its* zero value, recursively\n\nThe design goal is that the zero value should be **useful**. `var buf bytes.Buffer` and `var mu sync.Mutex` are ready to use with no constructor. The glaring exception is maps: the zero value is nil, and writing to a nil map panics.",
+      "examples": [
+        {
+          "label": "Zero values that just work",
+          "lang": "go",
+          "code": "var mu sync.Mutex      // ready: Lock() works\nvar buf bytes.Buffer   // ready: WriteString() works\nvar wg sync.WaitGroup  // ready: Add() works\n\nvar s []int            // nil, but append works: append(s, 1) is fine\nvar m map[string]int   // nil, and m[\"a\"] = 1 PANICS",
+          "note": "The nil slice is the one to remember as *safe*: `append`, `len` and `range` all work on it. The nil map is only safe to read."
+        },
+        {
+          "label": "A struct's zero value is recursive",
+          "lang": "go",
+          "code": "type Config struct {\n\tHost    string\n\tPort    int\n\tTags    []string\n\tLimits  map[string]int\n\tTimeout time.Duration\n}\n\nvar c Config\n// c.Host    == \"\"\n// c.Port    == 0\n// c.Tags    == nil   (append is fine)\n// c.Limits  == nil   (writing panics)\n// c.Timeout == 0",
+          "note": "This is why a struct full of maps needs a constructor, while one full of slices and scalars usually does not."
+        }
+      ],
+      "items": [
+        {
+          "id": "zero-match",
+          "type": "match",
+          "prompt": "Match each type to its zero value.",
+          "pairs": [
+            [
+              "string",
+              "\"\" — empty, and never nil"
+            ],
+            [
+              "[]byte",
+              "nil, but append and len still work"
+            ],
+            [
+              "map[string]int",
+              "nil — reads fine, writes panic"
+            ],
+            [
+              "*User",
+              "nil — dereferencing panics"
+            ]
+          ],
+          "explain": "The split that matters is nil-but-usable (slices) versus nil-and-fatal (maps, pointers). A nil slice behaves like an empty one for almost everything; a nil map only behaves like an empty one for reading."
+        },
+        {
+          "id": "nil-map-write",
+          "type": "mcq",
+          "prompt": "What does this program print?",
+          "code": {
+            "lang": "go",
+            "label": "main.go",
+            "text": "var counts map[string]int\ncounts[\"hits\"]++\nfmt.Println(counts)"
+          },
+          "choices": [
+            "Nothing — it panics with `assignment to entry in nil map`",
+            "`map[hits:1]` — the map is created on first write",
+            "`map[]` — the increment is silently dropped",
+            "It does not compile; the map must be made first"
+          ],
+          "answer": 0,
+          "explain": "`panic: assignment to entry in nil map`. It compiles fine — this is a runtime failure, and a very common one in production because the nil map usually arrives as a struct field nobody initialized. The fix is `make(map[string]int)` or a literal `map[string]int{}`.",
+          "tag": "panic"
+        },
+        {
+          "id": "nil-map-read",
+          "type": "mcq",
+          "prompt": "Same nil map, but you only read from it: `n := counts[\"hits\"]`.",
+          "choices": [
+            "`n` is 0 — reading a nil map is legal and yields the zero value",
+            "It panics the same way writes do",
+            "It returns the zero value but sets a runtime error flag",
+            "It does not compile without the comma-ok form"
+          ],
+          "answer": 0,
+          "explain": "Reads are fine and give you the value type's zero. `len()` returns 0, `range` iterates zero times, and `delete()` is a no-op. This asymmetry is deliberate: it makes a nil map a usable empty read-only map, so you rarely need a nil check before looking something up."
+        },
+        {
+          "id": "struct-zero-panic",
+          "type": "mcq",
+          "prompt": "`var c Config`, and nothing else. Which line panics first?",
+          "code": {
+            "lang": "go",
+            "label": "Config has Tags []string and Limits map[string]int",
+            "text": "c.Tags = append(c.Tags, \"a\")\nc.Limits[\"x\"] = 1\nfmt.Println(len(c.Tags), len(c.Limits))"
+          },
+          "choices": [
+            "Line 2 — appending to a nil slice is fine, writing to a nil map is not",
+            "Line 1 — a nil slice must be made before you can append to it",
+            "Line 3 — len() of a nil map panics",
+            "None of them; both auto-create on first use"
+          ],
+          "answer": 0,
+          "explain": "Line 2, and this asymmetry is worth burning in: a zero-value slice is a working empty slice, a zero-value map is a trap. So a struct of slices and scalars is usable straight from `var`, while one holding a map needs a constructor. That is the best reason there is to write `NewConfig()` instead of letting callers reach for the zero value.",
+          "tag": "panic"
+        },
+        {
+          "id": "useful-zero",
+          "type": "mcq",
+          "prompt": "`var mu sync.Mutex` with no further setup. Is `mu.Lock()` safe?",
+          "choices": [
+            "Yes — the zero value of a Mutex is an unlocked, ready mutex",
+            "No — a Mutex must be created with `sync.NewMutex()`",
+            "Only if the Mutex is a pointer field",
+            "Only after the first `Unlock()` initializes it"
+          ],
+          "answer": 0,
+          "explain": "Safe, and idiomatic. \"Make the zero value useful\" is an explicit Go design goal, which is why there is no `sync.NewMutex`. The thing to never do is *copy* a mutex after use — pass the struct by pointer, and let `go vet` catch it when you forget."
+        }
+      ]
+    },
+    {
+      "id": "conversions",
+      "title": "No implicit conversion",
+      "brief": "Go will not convert between numeric types for you. Not even `int` to `int64` on a machine where they are the same width.\n\nEvery conversion is explicit: `int64(n)`, `float64(count)`, `string(bytes)`. This is why Go code is full of small casts, and why mixing `int` with a library's `int64` is a compile error rather than a silent truncation at 3am.\n\nA named type is a *different type* even when its underlying type is identical: `type UserID int` does not interoperate with `int` without a conversion.",
+      "examples": [
+        {
+          "label": "The error you will see constantly",
+          "lang": "log",
+          "code": "./main.go:12:14: invalid operation: total + n (mismatched types int and int64)",
+          "note": "The fix is `total + int(n)` or `int64(total) + n` — and deciding which tells you where the real type should live."
+        },
+        {
+          "label": "Strings, bytes and runes",
+          "lang": "go",
+          "code": "s := \"héllo\"\n\nlen(s)            // 6  - BYTES, not characters\n[]byte(s)         // the 6 raw bytes\n[]rune(s)         // 5  - code points\nlen([]rune(s))    // 5\n\nfor i, r := range s {\n\t// i jumps 0,1,3,4,5 - byte offsets\n\t// r is a rune (int32)\n}",
+          "note": "A Go string is an immutable byte slice that is conventionally UTF-8. Indexing `s[0]` gives a byte; ranging gives runes."
+        }
+      ],
+      "items": [
+        {
+          "id": "mismatched-types",
+          "type": "mcq",
+          "prompt": "`var total int` and `var n int64`. What does `total + n` do on a 64-bit machine?",
+          "choices": [
+            "Fails to compile — mismatched types, even at the same width",
+            "Compiles; both are 64-bit integers at runtime",
+            "Compiles with int promoted to int64, as in C",
+            "Compiles but `go vet` flags the implicit promotion"
+          ],
+          "answer": 0,
+          "explain": "`invalid operation: total + n (mismatched types int and int64)`. Width is irrelevant — `int` and `int64` are distinct types. Go removed implicit numeric conversion entirely so that a narrowing conversion is always something you wrote on purpose and can grep for.",
+          "tag": "compiler"
+        },
+        {
+          "id": "convert-fill",
+          "type": "fill",
+          "prompt": "`n` is an `int`. Write the expression that converts it to an `int64`.",
+          "accept": [
+            "int64(n)"
+          ],
+          "placeholder": "expression",
+          "explain": "`int64(n)`. Conversion syntax is `T(v)` — it reads like a function call and is one. Note it is not free of consequence: converting the other way, `int32(bigInt64)`, silently truncates rather than panicking."
+        },
+        {
+          "id": "string-conv-match",
+          "type": "match",
+          "prompt": "`s := \"héllo\"`, `n := 65`. Match each expression to what it gives you.",
+          "pairs": [
+            [
+              "len(s)",
+              "6 — bytes, and é takes two of them"
+            ],
+            [
+              "len([]rune(s))",
+              "5 — actual characters"
+            ],
+            [
+              "string(n)",
+              "\"A\" — the character at code point 65"
+            ],
+            [
+              "strconv.Itoa(n)",
+              "\"65\" — the number written out"
+            ]
+          ],
+          "explain": "`len` on a string is always bytes, which matters the moment you slice by index — `s[:3]` can cut a character in half and produce invalid UTF-8. And `string(n)` versus `strconv.Itoa(n)` is the difference between a code point and a rendered number; picking the wrong one gives you mojibake rather than an error."
+        },
+        {
+          "id": "named-type",
+          "type": "mcq",
+          "prompt": "`type UserID int`, then `var id UserID = 5`. Does `id + 1` compile? Does passing `id` to `func f(n int)`?",
+          "choices": [
+            "`id + 1` yes, `f(id)` no — the untyped constant adapts, the named type does not",
+            "Both work; UserID is just an alias for int",
+            "Neither works without a conversion",
+            "`f(id)` works, `id + 1` does not"
+          ],
+          "answer": 0,
+          "explain": "`id + 1` compiles because `1` is an untyped constant that becomes a `UserID`. `f(id)` needs `f(int(id))` because `UserID` and `int` are different types. That distinction is the whole point — it stops you passing a UserID where an OrderID was wanted. `type UserID = int` with an equals sign *is* a true alias, and gives up the protection."
+        }
+      ]
+    },
+    {
+      "id": "shadowing",
+      "title": "Shadowing with :=",
+      "brief": "`:=` declares **new** variables in the **current scope**. If a variable with that name already exists in an outer scope, you now have two — and assignments to the inner one never reach the outer one.\n\nThe usual victim is `err`. An `if` or `for` body is its own scope, so `err := ...` inside one shadows the `err` outside it.\n\nThe rule that makes this survivable: `:=` needs **at least one new variable** on the left. If all of them already exist in *this* scope, it is an error, and the existing ones are assigned rather than redeclared.",
+      "examples": [
+        {
+          "label": "The bug",
+          "lang": "go",
+          "code": "func load() (*Config, error) {\n\tvar cfg *Config\n\tvar err error\n\n\tif useFile {\n\t\tcfg, err := readFile()   // := makes TWO new variables\n\t\t_ = cfg                  // the outer cfg is still nil\n\t\t_ = err\n\t}\n\n\treturn cfg, err              // always nil, nil\n}",
+          "note": "Change `:=` to `=` and it works. The compiler will not help: both inner variables are used, so there is no unused-variable error."
+        },
+        {
+          "label": "At least one new variable",
+          "lang": "go",
+          "code": "a, err := f()      // both new - fine\nb, err := g()      // b is new, err is reused - fine\nerr := h()         // nothing new - compile error\n\n// ./main.go:9:2: no new variables on left side of :=",
+          "note": "This is why chains of `x, err := ...` work without ceremony: `err` is assigned, not redeclared, as long as something beside it is new."
+        }
+      ],
+      "items": [
+        {
+          "id": "shadow-err",
+          "type": "mcq",
+          "prompt": "What does `load()` return when `useFile` is true and `readFile()` succeeds?",
+          "code": {
+            "lang": "go",
+            "label": "load()",
+            "text": "var cfg *Config\nvar err error\n\nif useFile {\n\tcfg, err := readFile()\n\t_, _ = cfg, err\n}\n\nreturn cfg, err"
+          },
+          "choices": [
+            "nil, nil — the inner `cfg` and `err` are different variables",
+            "The loaded config and nil — := assigns to the outer variables",
+            "It does not compile — cfg and err are redeclared",
+            "nil and a non-nil error about the shadowed declaration"
+          ],
+          "answer": 0,
+          "explain": "`nil, nil` — a function that silently returns nothing and reports no error. The `if` body is a new scope, so `:=` created a second pair of variables there. One character fixes it: `=` instead of `:=`. Reach for `=` whenever the variables already exist.",
+          "tag": "classic bug"
+        },
+        {
+          "id": "no-new-vars",
+          "type": "mcq",
+          "prompt": "In the same scope you have already written `data, err := read()`. Now you write `err := check()`.",
+          "choices": [
+            "Compile error: `no new variables on left side of :=`",
+            "It compiles and reassigns err",
+            "It compiles and shadows err within the same scope",
+            "It compiles but `go vet` warns about the redeclaration"
+          ],
+          "answer": 0,
+          "explain": "`no new variables on left side of :=`. Use `err = check()`. The rule only looks at the *current* scope, which is exactly why the shadowing bug survives: inside an `if` body, `err` is new as far as that scope is concerned, so nothing complains."
+        },
+        {
+          "id": "shadow-detect",
+          "type": "mcq",
+          "prompt": "Does plain `go vet` catch the shadowed-err bug?",
+          "choices": [
+            "No — shadow analysis is a separate pass that is not enabled by default",
+            "Yes, it is one of the default vet checks",
+            "Yes, but only with -race",
+            "No, and no Go tool can detect it"
+          ],
+          "answer": 0,
+          "explain": "No. The `shadow` analyzer lives in `golang.org/x/tools` and has to be run deliberately, because shadowing is legal and often intentional — flagging every instance would be unbearable. Most teams get this from a linter bundle instead, and it is worth turning on for `err` specifically.",
+          "tag": "tooling"
+        },
+        {
+          "id": "shadow-fix-fill",
+          "type": "fill",
+          "prompt": "`cfg` and `err` already exist in the enclosing function. What should the line inside the `if` block use instead of `:=`?",
+          "accept": [
+            "=",
+            "the = operator",
+            "plain ="
+          ],
+          "placeholder": "operator",
+          "explain": "`=`. Plain assignment reaches the variables that already exist rather than creating new ones in the inner scope. A reliable habit: use `:=` when you are introducing a name, `=` when you are updating one."
+        }
+      ]
+    }
+  ]
+}
