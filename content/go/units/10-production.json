@@ -1,0 +1,248 @@
+{
+  "id": "production",
+  "title": "How Go fails in production",
+  "summary": "Reading the crash, telling panic from fatal, and finding the leak.",
+  "concepts": [
+    {
+      "id": "reading-crashes",
+      "title": "Reading a panic",
+      "brief": "The first word tells you what kind of failure it is, and whether anything could have caught it:\n\n- **`panic:`** — recoverable in principle, deferred functions ran during the unwind.\n- **`fatal error:`** — not recoverable, no defers ran. The runtime judged the process unsalvageable.\n\nThen: `goroutine 42 [running]:` names the goroutine and its state, and the frames follow **innermost first**. Skip the ones under `/usr/local/go/src/` — the deepest frame in *your* code is where to look.\n\nA `[signal SIGSEGV ... addr=0x0]` line under a panic means a nil pointer was dereferenced. `addr=0x0` is the giveaway.",
+      "examples": [
+        {
+          "label": "A nil pointer dereference, annotated",
+          "lang": "log",
+          "code": "panic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x6f2a1c]\n\ngoroutine 42 [running]:\nmain.(*Store).Lookup(0x0, {0xc000184120, 0x5})\n        /app/store.go:31 +0x1c\nmain.handle({0x8a1f60, 0xc0001a4000}, 0xc0001b8100)\n        /app/main.go:58 +0x8d",
+          "note": "`addr=0x0` says nil. `main.(*Store).Lookup(0x0, ...)` shows the receiver *is* 0x0 — a nil `*Store`, so the bug is whoever constructed it, at main.go:58."
+        },
+        {
+          "label": "The states a goroutine can be parked in",
+          "lang": "text",
+          "code": "[running]        actually executing\n[runnable]       waiting for a processor\n[chan send]      blocked sending - nobody receiving\n[chan receive]   blocked receiving - nobody sending\n[select]         blocked in a select, no case ready\n[semacquire]     waiting on a mutex or WaitGroup\n[IO wait]        in a network read or write\n[sleep]          in time.Sleep",
+          "note": "In a goroutine profile, the state plus the line is usually the whole diagnosis: thousands at `[chan send]` on one line means the receivers are gone."
+        }
+      ],
+      "items": [
+        {
+          "id": "panic-vs-fatal-read",
+          "type": "mcq",
+          "prompt": "A crash log starts `fatal error: concurrent map writes`. What does the first word tell you?",
+          "choices": [
+            "No recover could have caught it, and no deferred functions ran",
+            "The same as panic, with more severe wording",
+            "The error came from cgo rather than Go code",
+            "The process was killed by the OS, not the runtime"
+          ],
+          "answer": 0,
+          "explain": "`fatal error:` bypasses the panic machinery entirely — no unwinding, no defers, no recover. The runtime uses it when continuing would corrupt state. So if someone says \"we recovered it and it still died\", the first word explains why. Fix the map with a mutex; there is no catching this one.",
+          "tag": "triage"
+        },
+        {
+          "id": "nil-addr",
+          "type": "mcq",
+          "prompt": "`[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x6f2a1c]`. What does `addr=0x0` tell you?",
+          "choices": [
+            "A nil pointer was dereferenced — address zero",
+            "The stack overflowed",
+            "Memory was corrupted by cgo",
+            "The binary was built for the wrong architecture"
+          ],
+          "answer": 0,
+          "explain": "Address zero is nil. In Go a SIGSEGV almost always means a nil pointer rather than genuine memory corruption, because the language has no pointer arithmetic. Look at the innermost frame of your own code: if the receiver is printed as `0x0`, the method was called on a nil value and the real bug is at the construction site."
+        },
+        {
+          "id": "frame-order",
+          "type": "order",
+          "prompt": "Put the steps of reading an unfamiliar panic in order.",
+          "steps": [
+            "Read the first word: panic or fatal error",
+            "Read the message itself to classify it - nil map, index, nil pointer",
+            "Find the deepest frame that is in your own code, not the standard library",
+            "Look at that line's inputs - which one could have been nil or out of range"
+          ],
+          "explain": "Frames are printed innermost first, so your code is usually a few lines down, under the runtime's own frames. The standard library is rarely the bug: it is where your bad value finally got used. Working from the deepest *application* frame is faster than reading top to bottom."
+        },
+        {
+          "id": "crash-match",
+          "type": "match",
+          "prompt": "Match each runtime message to its cause.",
+          "pairs": [
+            [
+              "assignment to entry in nil map",
+              "A map was declared but never made"
+            ],
+            [
+              "index out of range [5] with length 3",
+              "A slice index past the end"
+            ],
+            [
+              "interface conversion: ... is string, not int",
+              "A type assertion without comma-ok"
+            ],
+            [
+              "all goroutines are asleep - deadlock!",
+              "Every goroutine is blocked"
+            ]
+          ],
+          "explain": "The first three are panics and name the exact value involved, which usually makes the fix obvious. The fourth is a fatal error and only fires when *nothing* is runnable — so a server with a live listener never gets this message no matter how much is stuck."
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "title": "Memory, the GC and OOMKilled",
+      "brief": "Go's garbage collector targets a **heap size**, not a memory ceiling. By default `GOGC=100` means it lets the heap grow to roughly twice the live set before collecting — so a service with 300MB live will happily use 600MB, and a container limit of 512Mi kills it.\n\n**`GOMEMLIMIT`** (Go 1.19+) is the fix: a soft limit that makes the GC work harder as you approach it, instead of being killed. Set it a little below the container limit — 90% is a common choice — so there is headroom for stacks and off-heap allocations.\n\nAn OOMKill with no Go error in the log is the normal shape: the kernel kills the process, so there is nothing for Go to print.",
+      "examples": [
+        {
+          "label": "Giving the GC the container's budget",
+          "lang": "yaml",
+          "code": "env:\n  - name: GOMEMLIMIT\n    value: \"920MiB\"      # ~90% of the limit below\n  - name: GOMAXPROCS\n    value: \"2\"\nresources:\n  limits:\n    memory: 1Gi\n    cpu: \"2\"",
+          "note": "Go 1.25 makes GOMAXPROCS cgroup-aware, so setting it by hand matters less on newer runtimes — GOMEMLIMIT still has to be set deliberately."
+        },
+        {
+          "label": "Watching the collector work",
+          "lang": "bash",
+          "code": "$ GODEBUG=gctrace=1 ./app\ngc 1 @0.021s 0%: ... 4->4->1 MB, 5 MB goal, 8 P",
+          "note": "`4->4->1 MB` is heap before, after marking, and live; `5 MB goal` is the next trigger. Rising live size across cycles is a real leak rather than GC lag."
+        }
+      ],
+      "items": [
+        {
+          "id": "gogc-oom",
+          "type": "mcq",
+          "prompt": "A pod with a 512Mi limit is OOMKilled. Live heap is around 300MB and there is no Go error in the log. Why?",
+          "choices": [
+            "GOGC=100 lets the heap reach ~2x live before collecting, overshooting the limit",
+            "A goroutine leak; live heap would otherwise be stable",
+            "The GC is disabled by default in container builds",
+            "The log is missing because the panic went to stdout rather than stderr"
+          ],
+          "answer": 0,
+          "explain": "The GC targets a heap *ratio*, and knows nothing about the cgroup limit unless you tell it. 300MB live with GOGC=100 aims for about 600MB, which exceeds 512Mi, and the kernel kills the process before Go can react — hence no error at all. Set `GOMEMLIMIT` to roughly 90% of the limit.",
+          "tag": "production"
+        },
+        {
+          "id": "gomemlimit",
+          "type": "mcq",
+          "prompt": "What does GOMEMLIMIT do when the limit is approached?",
+          "choices": [
+            "The GC runs more aggressively to stay under it — it is a soft limit",
+            "Allocations start returning errors",
+            "The program panics with out of memory",
+            "It is a hard cap enforced by the runtime allocator"
+          ],
+          "answer": 0,
+          "explain": "Soft: Go collects harder rather than failing, trading CPU for memory. If the live set genuinely exceeds it you get GC thrashing — high CPU and little progress — which is a clearer signal than a silent kill, and survivable long enough to notice. It does not replace fixing the leak."
+        },
+        {
+          "id": "oom-silent",
+          "type": "mcq",
+          "prompt": "Why does an OOMKilled Go container usually leave no stack trace?",
+          "choices": [
+            "The kernel kills the process with SIGKILL — Go gets no chance to print",
+            "Go writes the trace to a file instead of stderr",
+            "Out-of-memory is a fatal error, and those print nothing",
+            "The trace is written but truncated by the container runtime"
+          ],
+          "answer": 0,
+          "explain": "SIGKILL cannot be handled, so the process is simply gone. Reach for the pod's previous-state exit code — 137 is SIGKILL — and for the kernel's OOM message, rather than looking for an application log that will never exist. Go's own `fatal error: out of memory` only appears when the Go allocator fails first.",
+          "tag": "triage"
+        },
+        {
+          "id": "mem-signals",
+          "type": "multi",
+          "prompt": "Memory is climbing steadily. Which of these distinguish a leak from normal GC behavior?",
+          "choices": [
+            "The live heap after each GC rises across cycles rather than returning to a baseline",
+            "The goroutine count rises monotonically",
+            "The heap profile shows one allocation site growing without bound",
+            "RSS is higher than the live heap"
+          ],
+          "answers": [
+            0,
+            1,
+            2
+          ],
+          "explain": "The first three are real signals. RSS above live heap is normal and expected — Go keeps freed memory mapped for reuse and returns it to the OS lazily, so comparing RSS to heap size tells you very little on its own."
+        }
+      ]
+    },
+    {
+      "id": "profiling",
+      "title": "pprof, and what to collect",
+      "brief": "`import _ \"net/http/pprof\"` registers handlers under `/debug/pprof/` on the default mux. Expose it on a port that is not public.\n\n- **`/debug/pprof/goroutine?debug=1`** — counts and stacks, grouped. The first thing to pull for a hang or a climbing-memory problem.\n- **`/debug/pprof/heap`** — what is allocated *now*, by allocation site.\n- **`/debug/pprof/profile?seconds=30`** — a CPU profile over a window.\n\n`go tool pprof` reads any of them. The single most useful command once it is open is `top`, then `list <function>` to see the cost line by line.",
+      "examples": [
+        {
+          "label": "Pulling and reading a profile",
+          "lang": "bash",
+          "code": "# count goroutines, grouped by stack\n$ curl -s localhost:6060/debug/pprof/goroutine?debug=1 | head\n\n# interactive, against a live process\n$ go tool pprof http://localhost:6060/debug/pprof/heap\n(pprof) top\n(pprof) list myFunc",
+          "note": "Profiles are small and cheap to collect. The goroutine one is effectively free; a CPU profile costs a few percent for its window."
+        }
+      ],
+      "items": [
+        {
+          "id": "which-profile",
+          "type": "match",
+          "prompt": "Match the symptom to the profile you should pull first.",
+          "pairs": [
+            [
+              "Memory climbing, no obvious allocation",
+              "goroutine — look for a leak"
+            ],
+            [
+              "High CPU with normal traffic",
+              "profile — a CPU sample over 30s"
+            ],
+            [
+              "Heap large and growing",
+              "heap — allocations by site"
+            ],
+            [
+              "Requests hang but the process is alive",
+              "goroutine — see what they block on"
+            ]
+          ],
+          "explain": "The goroutine profile answers two very different questions, which is why it is usually the first thing to grab: it shows both leaks and hangs, and it is cheap enough to collect on a struggling process."
+        },
+        {
+          "id": "pprof-import",
+          "type": "mcq",
+          "prompt": "You add `import _ \"net/http/pprof\"` but never reference the package. Why does it still work?",
+          "choices": [
+            "Its init() registers the handlers on http.DefaultServeMux",
+            "The compiler links it because the import is blank",
+            "The runtime scans for debug packages at startup",
+            "It does not — you must call pprof.Register()"
+          ],
+          "answer": 0,
+          "explain": "Side-effect import. The catch is that it registers on `http.DefaultServeMux`, so if your service uses a custom mux you will not see the routes — and if it serves the default mux publicly, you have just exposed profiling to the internet. Run it on a separate internal listener.",
+          "tag": "production"
+        },
+        {
+          "id": "triage-order",
+          "type": "order",
+          "prompt": "A Go service is using more memory every hour. Put the triage in order.",
+          "steps": [
+            "Check whether the goroutine count is rising monotonically",
+            "If it is, pull the goroutine profile and group the stacks",
+            "If it is not, pull the heap profile and find the growing allocation site",
+            "Set GOMEMLIMIT as a stopgap so the pod degrades instead of being killed"
+          ],
+          "explain": "Goroutines first, because a goroutine leak explains a memory leak and the check costs one number. Only if goroutines are flat is it worth reading the heap profile. `GOMEMLIMIT` is a mitigation, not a fix — it buys time to find the cause without a crash loop."
+        },
+        {
+          "id": "race-in-prod",
+          "type": "mcq",
+          "prompt": "Should you run the race detector in production to catch an intermittent data race?",
+          "choices": [
+            "No — it costs several times the CPU and memory; run it in tests and staging",
+            "Yes, it is designed for production use",
+            "Yes, but only with GOMAXPROCS=1",
+            "No, because it only works on test binaries"
+          ],
+          "answer": 0,
+          "explain": "`-race` instruments every memory access: expect a large slowdown and much higher memory. It works on any binary, not just tests, so a race-enabled build in staging under realistic load is a reasonable middle ground. It only reports races it actually observes, so it needs the code path to execute."
+        }
+      ]
+    }
+  ]
+}

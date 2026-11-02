@@ -12,7 +12,9 @@
     "05-errors",
     "06-concurrency",
     "07-cancellation",
-    "08-defer-panic"
+    "08-defer-panic",
+    "09-packages",
+    "10-production"
   ],
   "flows": [
     "01-request-through-a-handler",
