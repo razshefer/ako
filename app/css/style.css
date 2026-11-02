@@ -152,7 +152,7 @@ svg{flex:none}
 .empty .big{font-size:34px;margin-bottom:8px}
 
 /* code */
-pre.code{
+pre.code{tab-size:4;-moz-tab-size:4;
   margin:10px 0 0; padding:12px 14px;
   background:var(--bg-soft); border:1px solid var(--line-soft);
   border-radius:var(--radius-sm);

@@ -88,7 +88,7 @@ for paragraphs. Nothing else — no headings, no fenced blocks (use `examples`
 for code).
 
 `lang` on an example or a code block affects only the light syntax tinting:
-`yaml`, `json`, `bash`, `sh`, `log`, `text`. Unknown values render as plain text.
+`yaml`, `json`, `bash`, `sh`, `go`, `log`, `text`. Unknown values render as plain text.
 
 ## Exercise types
 
