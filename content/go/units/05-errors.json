@@ -1,0 +1,333 @@
+{
+  "id": "errors",
+  "title": "Errors are values",
+  "summary": "Returned, not thrown. Wrapping, errors.Is and errors.As, and when a panic is right.",
+  "concepts": [
+    {
+      "id": "error-values",
+      "title": "error is just an interface",
+      "brief": "There are no exceptions. `error` is an ordinary one-method interface —\n`type error interface { Error() string }` — and failures are **returned** alongside results.\n\nThat is why Go code is full of `if err != nil`. The upside is that every failure path is visible in the source and the compiler makes you name the error; the cost is verbosity, which the language accepts on purpose.\n\nThe convention is firm: the error is the **last** return value, and when it is non-nil the other values are **not meaningful** unless the function documents otherwise — as `io.Reader` does, where `Read` can return both bytes and `io.EOF`.",
+      "examples": [
+        {
+          "label": "The shape of everything",
+          "lang": "go",
+          "code": "f, err := os.Open(path)\nif err != nil {\n\treturn fmt.Errorf(\"open config: %w\", err)\n}\ndefer f.Close()",
+          "note": "`err` last, checked immediately, wrapped with context on the way up. This four-line shape is most of the error handling you will ever write."
+        },
+        {
+          "label": "Making one",
+          "lang": "go",
+          "code": "errors.New(\"not found\")                      // static text\nfmt.Errorf(\"user %d: not found\", id)         // formatted, no wrapping\nfmt.Errorf(\"load user: %w\", err)             // formatted, WRAPS err\n\n// a custom type, when callers need the details\ntype NotFoundError struct{ ID int }\nfunc (e *NotFoundError) Error() string {\n\treturn fmt.Sprintf(\"user %d not found\", e.ID)\n}",
+          "note": "`%w` is the only one that preserves the original for `errors.Is` and `errors.As`. `%v` flattens it to text."
+        }
+      ],
+      "items": [
+        {
+          "id": "error-interface",
+          "type": "mcq",
+          "prompt": "What makes a type usable as an `error`?",
+          "choices": [
+            "Having a method `Error() string` — error is a normal one-method interface",
+            "Embedding the built-in `error` type",
+            "Being created by `errors.New` or `fmt.Errorf`",
+            "Implementing `String() string`"
+          ],
+          "answer": 0,
+          "explain": "One method, `Error() string`. `error` is predeclared but entirely ordinary, which is what lets you define a struct with fields, return it as an error, and recover the fields later with `errors.As`. Note it is `Error()`, not `String()` — implementing the wrong one is a quiet way to not be an error at all."
+        },
+        {
+          "id": "err-last",
+          "type": "mcq",
+          "prompt": "A function returns `(*User, error)` and the error is non-nil. What should you assume about the `*User`?",
+          "choices": [
+            "Nothing — treat it as unusable unless the function documents otherwise",
+            "It is always nil when the error is non-nil",
+            "It holds whatever was parsed before the failure",
+            "It is the zero value, guaranteed by the compiler"
+          ],
+          "answer": 0,
+          "explain": "By convention the other values are meaningless on error, and nothing enforces it. Some functions deliberately return both — `Read` returns n bytes *and* `io.EOF`, and ignoring n there loses data. So: assume unusable, and check the documentation when it matters."
+        },
+        {
+          "id": "errorf-w",
+          "type": "mcq",
+          "prompt": "You wrap with `fmt.Errorf(\"load: %v\", err)` instead of `%w`. What breaks?",
+          "choices": [
+            "errors.Is and errors.As can no longer see the original error",
+            "Nothing — %v and %w produce the same error value",
+            "The message loses the original text",
+            "The error can no longer be compared with =="
+          ],
+          "answer": 0,
+          "explain": "The message looks identical, which is what makes this hard to spot. But `%v` flattens the original to a string, so the chain is cut: `errors.Is(err, os.ErrNotExist)` starts returning false and a caller's retry logic silently stops working. Use `%w` unless you deliberately want to hide the cause.",
+          "tag": "classic bug"
+        },
+        {
+          "id": "errnew-fill",
+          "type": "fill",
+          "prompt": "Which standard-library function creates an error from a fixed string, with no formatting?",
+          "accept": [
+            "errors.New",
+            "errors.New()"
+          ],
+          "placeholder": "function",
+          "explain": "`errors.New(\"...\")`. Each call returns a **distinct** value even for identical text, so two separately-created errors with the same message are never `==`. That is exactly why sentinels are package-level variables created once, rather than built at the point of failure."
+        }
+      ]
+    },
+    {
+      "id": "wrapping",
+      "title": "Wrapping, Is and As",
+      "brief": "`%w` wraps an error inside another, building a **chain** that keeps the original reachable while each layer adds context.\n\n- `errors.Is(err, target)` — walks the chain looking for a specific **value**, like `os.ErrNotExist`. This is how you test for sentinels.\n- `errors.As(err, &target)` — walks the chain looking for a specific **type**, and assigns it so you can read its fields.\n\nUse these instead of `==` and a type assertion. The moment anything in the stack wraps, a direct comparison stops matching — and you will not find out until the layer that wraps is added months later.",
+      "examples": [
+        {
+          "label": "A chain, and reading through it",
+          "lang": "go",
+          "code": "// three layers deep\nerr := fmt.Errorf(\"handle request: %w\",\n\tfmt.Errorf(\"load config: %w\", os.ErrNotExist))\n\nerr == os.ErrNotExist              // false - it is wrapped twice\nerrors.Is(err, os.ErrNotExist)     // true  - walks the chain\n\nerr.Error()\n// handle request: load config: file does not exist",
+          "note": "Each layer prepends its context, so the message reads outermost-first and tells you the path through the code."
+        },
+        {
+          "label": "Getting the details back",
+          "lang": "go",
+          "code": "var nf *NotFoundError\nif errors.As(err, &nf) {\n\tlog.Printf(\"missing user %d\", nf.ID)\n}",
+          "note": "`As` takes a **pointer to** the target variable, and panics if you forget the `&`. The target is set to the first matching error in the chain."
+        }
+      ],
+      "items": [
+        {
+          "id": "is-vs-eq",
+          "type": "mcq",
+          "prompt": "A helper wraps its error with `%w`. Your caller still tests `if err == os.ErrNotExist`.",
+          "choices": [
+            "The comparison is now false; use errors.Is to walk the chain",
+            "It still works — == follows the wrap chain",
+            "It still works, but only one level deep",
+            "It does not compile once the error is wrapped"
+          ],
+          "answer": 0,
+          "explain": "`==` compares the outer value only, and the outer value is now the wrapper. `errors.Is` exists precisely so that adding context to an error somewhere in the middle of a call stack cannot silently break a caller's check. Reach for `errors.Is` by default.",
+          "tag": "classic bug"
+        },
+        {
+          "id": "is-vs-as",
+          "type": "mcq",
+          "prompt": "You need the `ID` field off a `*NotFoundError` that is wrapped two layers deep. Which do you use?",
+          "choices": [
+            "errors.As — it finds by type and assigns it so you can read fields",
+            "errors.Is — it finds by type and returns the match",
+            "A type assertion on err, after calling errors.Unwrap twice",
+            "errors.Join, then read the first element"
+          ],
+          "answer": 0,
+          "explain": "`As` is the type-based one and gives you the value; `Is` is the value-based one and gives you a bool. The mnemonic: **Is** this specific error? **As** this kind of error? Unwrapping by hand works but breaks when anyone changes the number of layers."
+        },
+        {
+          "id": "as-pointer",
+          "type": "mcq",
+          "prompt": "You call `errors.As(err, nf)` where `nf` is already a `*NotFoundError`, without the `&`.",
+          "choices": [
+            "It panics — As requires a pointer to the target variable",
+            "It works; nf is already a pointer",
+            "It returns false silently",
+            "It does not compile"
+          ],
+          "answer": 0,
+          "explain": "`As` has to *assign* to your variable, so it needs the address of the variable itself — `&nf`, a `**NotFoundError`. Passing the wrong thing panics at runtime rather than failing to compile, because the parameter is an `any`. Always `var x *T; errors.As(err, &x)`.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "wrap-match",
+          "type": "match",
+          "prompt": "Match each tool to what it is for.",
+          "pairs": [
+            [
+              "%w in fmt.Errorf",
+              "Adds context while keeping the original reachable"
+            ],
+            [
+              "errors.Is",
+              "Is this a specific error value, anywhere in the chain?"
+            ],
+            [
+              "errors.As",
+              "Is there an error of this type, and give it to me"
+            ],
+            [
+              "errors.Join",
+              "Combine several errors into one"
+            ]
+          ],
+          "explain": "`errors.Join` arrived in Go 1.20 for the case where several things failed and you do not want to pick one — a batch, or several cleanup steps. `errors.Is` and `As` both see through a join as well as a wrap."
+        },
+        {
+          "id": "wrap-context",
+          "type": "mcq",
+          "prompt": "What is wrong with `if err != nil { return err }` at every layer?",
+          "choices": [
+            "The final message has no path through the code — just \"file does not exist\"",
+            "It loses the wrap chain, so errors.Is stops working",
+            "It is slower, because the error is copied at every layer",
+            "Nothing; bare returns are the idiomatic form"
+          ],
+          "answer": 0,
+          "explain": "The chain survives — nothing is lost — but you end up at the top with `file does not exist` and no idea which file or which operation. Add context at each layer that knows something the one below does not: `fmt.Errorf(\"load user %d: %w\", id, err)`. Do not repeat what the inner error already says."
+        }
+      ]
+    },
+    {
+      "id": "sentinels",
+      "title": "Sentinels and custom types",
+      "brief": "Two ways to let a caller react to a *specific* failure:\n\n- A **sentinel** — a package-level `var ErrNotFound = errors.New(\"not found\")` that callers test with `errors.Is`. Simple, but it becomes part of your public API forever.\n- A **custom type** — a struct with fields, found with `errors.As`. Use it when the caller needs *details*, not just the category.\n\nThe naming convention is strict enough to rely on: sentinel values start with `Err`, error types end in `Error`. `io.EOF` is the famous exception, and it is also the most important sentinel in the language — `Read` returns it to mean \"nothing left\", which is an expected outcome rather than a failure.",
+      "examples": [
+        {
+          "label": "Both forms",
+          "lang": "go",
+          "code": "// sentinel - the caller only needs the category\nvar ErrNotFound = errors.New(\"not found\")\n\n// typed - the caller needs the details\ntype ValidationError struct {\n\tField string\n\tValue any\n}\n\nfunc (e *ValidationError) Error() string {\n\treturn fmt.Sprintf(\"invalid %s: %v\", e.Field, e.Value)\n}",
+          "note": "Sentinels are created once at package level so identity comparison is stable; building one per failure would make `errors.Is` useless."
+        },
+        {
+          "label": "io.EOF is not a failure",
+          "lang": "go",
+          "code": "for {\n\tn, err := r.Read(buf)\n\tif n > 0 {\n\t\tprocess(buf[:n])   // use the bytes FIRST\n\t}\n\tif err == io.EOF {\n\t\tbreak              // normal end\n\t}\n\tif err != nil {\n\t\treturn err         // a real failure\n\t}\n}",
+          "note": "`Read` may return bytes *and* `io.EOF` in the same call. Checking the error before using `n` is a real and easy way to drop the last chunk of a file."
+        }
+      ],
+      "items": [
+        {
+          "id": "sentinel-vs-type",
+          "type": "mcq",
+          "prompt": "Callers need to know which field failed validation, not just that validation failed. Sentinel or custom type?",
+          "choices": [
+            "A custom type with a Field, retrieved with errors.As",
+            "A sentinel per field, tested with errors.Is",
+            "A sentinel, with the field name formatted into the message",
+            "Return a plain string alongside the error"
+          ],
+          "answer": 0,
+          "explain": "Details mean a type. A sentinel only answers yes/no, and parsing the field back out of the message is the kind of thing that works until someone rewords it. Rule of thumb: sentinel for a category the caller branches on, type when they need data."
+        },
+        {
+          "id": "eof-order",
+          "type": "order",
+          "prompt": "Put one iteration of a correct Read loop in order.",
+          "steps": [
+            "Call Read into the buffer, getting n and err",
+            "If n > 0, process buf[:n] — bytes can arrive alongside an error",
+            "If err is io.EOF, stop: this is the normal end of the stream",
+            "If err is any other non-nil, return it as a real failure"
+          ],
+          "explain": "Processing before checking the error is the part people get wrong, and it silently truncates the last read. The `io` documentation is explicit that callers should handle the bytes returned before considering the error. Most code avoids this by using `io.ReadAll` or `bufio.Scanner` instead of calling `Read` directly.",
+          "tag": "data loss"
+        },
+        {
+          "id": "sentinel-naming",
+          "type": "match",
+          "prompt": "Match each name to what it is, by convention.",
+          "pairs": [
+            [
+              "ErrNotFound",
+              "A sentinel value, compared with errors.Is"
+            ],
+            [
+              "ValidationError",
+              "An error type, found with errors.As"
+            ],
+            [
+              "io.EOF",
+              "A sentinel meaning the stream ended normally"
+            ],
+            [
+              "errors.New",
+              "The function that makes a sentinel"
+            ]
+          ],
+          "explain": "The `Err` prefix versus the `Error` suffix is a reliable signal in someone else's package: it tells you whether to reach for `Is` or `As` before you read any documentation."
+        },
+        {
+          "id": "sentinel-api",
+          "type": "mcq",
+          "prompt": "What is the main cost of exporting a sentinel like `ErrNotFound`?",
+          "choices": [
+            "It is public API — callers depend on it, so it cannot be removed or re-meant",
+            "It allocates on every comparison",
+            "It cannot be wrapped with %w",
+            "It prevents the package from defining error types as well"
+          ],
+          "answer": 0,
+          "explain": "Once it is exported, someone's retry logic is keyed on it and removing it is a breaking change. That is the argument for keeping sentinels few and deliberate, and for not exporting one until a caller actually needs to branch on it."
+        }
+      ]
+    },
+    {
+      "id": "panic-vs-error",
+      "title": "When a panic is the right answer",
+      "brief": "A panic is for a **bug**, not for a condition. The line: if a competent caller could have prevented it, it is a bug; if it depends on the world — a file, a network, user input — it is an error and must be returned.\n\nThe standard library is consistent about this. `strconv.Atoi(\"abc\")` returns an error, because bad input is expected. Indexing past the end of a slice panics, because that is always a mistake in your code.\n\nPanicking across a package boundary is close to always wrong. The exceptions are a failed invariant during initialization — `regexp.MustCompile`, `template.Must` — where the input is a constant in your source, so a failure means the program should never have started.",
+      "examples": [
+        {
+          "label": "The Must convention",
+          "lang": "go",
+          "code": "// package level - the pattern is a literal, so a failure is a typo\nvar validName = regexp.MustCompile(`^[a-z0-9-]+$`)\n\n// at runtime, on data from outside - return the error\nre, err := regexp.Compile(userSuppliedPattern)\nif err != nil {\n\treturn fmt.Errorf(\"bad pattern: %w\", err)\n}",
+          "note": "A `Must` prefix is a promise that it panics. Use them only where the input is fixed at compile time."
+        }
+      ],
+      "items": [
+        {
+          "id": "panic-or-error",
+          "type": "multi",
+          "prompt": "Which of these should return an error rather than panic?",
+          "choices": [
+            "A config file is missing on disk",
+            "A user submits a malformed date",
+            "An index is past the end of a slice",
+            "A database connection times out"
+          ],
+          "answers": [
+            0,
+            1,
+            3
+          ],
+          "explain": "Everything that depends on the world outside your process. The slice index is the odd one out: no input makes it correct, so it is a bug in your code and the runtime is right to stop you. Ask \"could the caller have prevented this?\" — if yes, panic; if no, return."
+        },
+        {
+          "id": "must-convention",
+          "type": "mcq",
+          "prompt": "What does the `Must` prefix promise, as in `regexp.MustCompile`?",
+          "choices": [
+            "It panics instead of returning an error, so use it only on fixed input",
+            "It retries until it succeeds",
+            "It is the thread-safe variant",
+            "It validates eagerly instead of lazily"
+          ],
+          "answer": 0,
+          "explain": "It panics on failure. That is acceptable at package level, where the argument is a literal and a failure means the binary is broken and should not start. Using `MustCompile` on a pattern that came from config turns a config typo into a crash loop."
+        },
+        {
+          "id": "lib-panic",
+          "type": "mcq",
+          "prompt": "A library you import panics on malformed input instead of returning an error. Why is that a problem beyond style?",
+          "choices": [
+            "A panic unwinds past every caller, so it is not recoverable where the decision belongs",
+            "Panics cannot cross package boundaries at all",
+            "It prevents the caller from using defer",
+            "It forces the caller to run with -race"
+          ],
+          "answer": 0,
+          "explain": "The caller has the context to decide whether bad input is fatal, and a panic takes that away — their only defense is a `recover`, which is clumsy and has to sit in exactly the right goroutine. Returning an error leaves the decision with the code that can actually make it."
+        },
+        {
+          "id": "atoi-contrast",
+          "type": "mcq",
+          "prompt": "`strconv.Atoi(\"abc\")` returns an error, but `s[10]` on a 3-element slice panics. What is the principle?",
+          "choices": [
+            "Bad external input is an expected condition; a bad index is always a bug",
+            "Standard library functions never panic, only the runtime does",
+            "Conversions return errors; operators panic",
+            "Atoi is newer and follows modern conventions"
+          ],
+          "answer": 0,
+          "explain": "The dividing line is who could have prevented it. A string from a user can be anything, so parsing must be able to fail gracefully. An out-of-range index means your own code computed something impossible — continuing would just corrupt state further."
+        }
+      ]
+    }
+  ]
+}

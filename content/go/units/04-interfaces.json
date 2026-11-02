@@ -1,0 +1,331 @@
+{
+  "id": "interfaces",
+  "title": "Interfaces",
+  "summary": "Satisfied without declaring it, and the nil that is not nil.",
+  "concepts": [
+    {
+      "id": "satisfaction",
+      "title": "Implicit satisfaction",
+      "brief": "There is no `implements` keyword. A type satisfies an interface by **having the methods**, and the check happens where you assign it, not where you declare it.\n\nThe consequence is that the interface belongs to the **consumer**, not the provider. You can define an interface in your own package that is satisfied by a type from someone else's, which they never anticipated — and that is the normal way to make third-party code testable.\n\nIt also pushes interfaces small. `io.Reader` has one method. The proverb is \"the bigger the interface, the weaker the abstraction\", and the practical advice is **accept interfaces, return structs**.",
+      "examples": [
+        {
+          "label": "Nobody declared anything",
+          "lang": "go",
+          "code": "// in your package\ntype Pinger interface {\n\tPing(ctx context.Context) error\n}\n\n// in a library you do not control\ntype Client struct{ /* ... */ }\nfunc (c *Client) Ping(ctx context.Context) error { /* ... */ }\n\n// this just works\nvar p Pinger = &Client{}",
+          "note": "The library author never heard of `Pinger`. Nothing in their code changes, and nothing imports your package."
+        },
+        {
+          "label": "Asserting it at compile time",
+          "lang": "go",
+          "code": "var _ io.Writer = (*Buffer)(nil)",
+          "note": "A throwaway declaration whose only job is to fail the build if `*Buffer` ever stops satisfying `io.Writer`. Common at the top of a file; costs nothing at runtime."
+        }
+      ],
+      "items": [
+        {
+          "id": "implicit-satisfy",
+          "type": "mcq",
+          "prompt": "You want a type from a third-party library to satisfy an interface you define. What do they have to change?",
+          "choices": [
+            "Nothing — satisfaction is structural and checked where you assign",
+            "They must import your package and declare that they implement it",
+            "You must write an adapter type that wraps theirs",
+            "You must vendor the library and add the declaration yourself"
+          ],
+          "answer": 0,
+          "explain": "Nothing at all. This is the single most useful property of Go interfaces: the consumer defines what it needs, so you can narrow a 90-method client down to the one method your function actually calls, and fake it in a test without touching the library."
+        },
+        {
+          "id": "accept-return",
+          "type": "mcq",
+          "prompt": "\"Accept interfaces, return structs.\" Why return a concrete struct rather than an interface?",
+          "choices": [
+            "Callers can still use whatever interface they need; returning one only removes options",
+            "Interfaces cannot be used as return types in Go",
+            "Returning an interface allocates, returning a struct does not",
+            "It is required for the compile-time satisfaction check to run"
+          ],
+          "answer": 0,
+          "explain": "A concrete return keeps every method available and lets each caller define the narrow interface *it* wants. Returning an interface fixes that decision for everyone and hides methods they might need. The notable exception is `error`, which is an interface precisely so the concrete type can vary."
+        },
+        {
+          "id": "compile-assert-fill",
+          "type": "fill",
+          "prompt": "Write the throwaway declaration that makes the build fail if `*Buffer` stops satisfying `io.Writer`.",
+          "accept": [
+            "var _ io.Writer = (*Buffer)(nil)",
+            "var _ io.Writer = new(Buffer)"
+          ],
+          "placeholder": "declaration",
+          "explain": "`var _ io.Writer = (*Buffer)(nil)`. The blank identifier discards the value, so nothing exists at runtime — it is purely a compile-time assertion. Without it, a dropped or renamed method is only caught at the call site, which may be in someone else's package."
+        },
+        {
+          "id": "iface-size",
+          "type": "mcq",
+          "prompt": "You need to fake a dependency in a test. Its real type has 40 methods, and your function calls one of them. What interface should the function take?",
+          "choices": [
+            "A one-method interface, declared in your own package",
+            "The full 40-method interface, so the fake is interchangeable",
+            "The concrete type, with a build tag swapping in a test version",
+            "`any`, with a type switch inside the function"
+          ],
+          "answer": 0,
+          "explain": "One method, defined next to the function that needs it. Your fake then implements one method instead of forty. This is why the standard library is full of tiny interfaces and why `io.Reader` composes with everything — the interface describes what the *caller* needs, not what the implementation offers."
+        }
+      ]
+    },
+    {
+      "id": "typed-nil",
+      "title": "The nil that is not nil",
+      "brief": "An interface value is a **pair**: a concrete type, and a value of that type. It equals `nil` only when **both halves are empty**.\n\nAssign a nil `*MyError` to an `error` and you get a pair of (`*MyError`, nil). The type half is filled in, so the interface is **not nil**, and `if err != nil` is true for an error that does not exist.\n\nThis is the most notorious bug in Go, and it is nearly always caused by declaring a function's return as a concrete pointer type instead of `error`.",
+      "examples": [
+        {
+          "label": "The bug, in full",
+          "lang": "go",
+          "code": "type MyErr struct{}\nfunc (e *MyErr) Error() string { return \"boom\" }\n\nfunc find() *MyErr {      // concrete return type - the mistake\n\treturn nil\n}\n\nfunc run() error {\n\treturn find()         // nil *MyErr -> non-nil error\n}\n\nif err := run(); err != nil {\n\t// TAKEN. err is (*MyErr, nil)\n\tfmt.Println(err)      // prints boom\n}",
+          "note": "The fix is to declare `find()` as returning `error`, so there is never a concrete nil to promote."
+        },
+        {
+          "label": "Both halves have to be empty",
+          "lang": "go",
+          "code": "var err error            // (nil, nil)       -> err == nil is TRUE\n\nvar p *MyErr             // a nil pointer\nerr = p                  // (*MyErr, nil)   -> err == nil is FALSE\n\nfmt.Println(err == nil)  // false\nfmt.Printf(\"%v\\n\", err)  // boom",
+          "note": "`fmt` calls `Error()` on it, and the method runs fine because a nil pointer receiver is legal — which is why the symptom is a confusing message rather than a panic."
+        }
+      ],
+      "items": [
+        {
+          "id": "typed-nil-check",
+          "type": "mcq",
+          "prompt": "`run()` returns `error`, and its body is `return find()` where `find()` returns a nil `*MyErr`. Is `run() != nil`?",
+          "code": {
+            "lang": "go",
+            "label": "the shapes",
+            "text": "func find() *MyErr { return nil }\nfunc run() error   { return find() }"
+          },
+          "choices": [
+            "True — the interface holds a type (*MyErr) even though the value is nil",
+            "False — a nil pointer converts to a nil interface",
+            "True, but only if MyErr has a pointer receiver on Error()",
+            "It does not compile; *MyErr cannot be returned as error"
+          ],
+          "answer": 0,
+          "explain": "True, and this is the bug. The interface is a (type, value) pair and only the value half is nil, so the pair is not. Every caller's `if err != nil` fires on a success. Fix it at the source: `find()` should return `error`, never `*MyErr`.",
+          "tag": "classic bug"
+        },
+        {
+          "id": "iface-pair",
+          "type": "match",
+          "prompt": "Match each assignment to whether the interface ends up equal to nil.",
+          "pairs": [
+            [
+              "var err error",
+              "nil — both halves empty"
+            ],
+            [
+              "err = (*MyErr)(nil)",
+              "not nil — the type half is set"
+            ],
+            [
+              "err = &MyErr{}",
+              "not nil — both halves set"
+            ],
+            [
+              "err = nil",
+              "nil — assigning the literal clears both"
+            ]
+          ],
+          "explain": "Only an interface whose type half is empty is nil. This is also why comparing two interfaces compares both halves, and why an interface holding an uncomparable type like a slice panics at runtime on `==`."
+        },
+        {
+          "id": "typed-nil-fix",
+          "type": "mcq",
+          "prompt": "What is the right fix for the typed-nil bug?",
+          "choices": [
+            "Declare the helper as returning `error` rather than a concrete type",
+            "Have callers compare with `errors.Is(err, nil)` instead of `!= nil`",
+            "Give MyErr a value receiver on Error()",
+            "Return `errors.New(\"\")` instead of nil to keep the types consistent"
+          ],
+          "answer": 0,
+          "explain": "Stop the concrete nil from ever reaching an interface: return `error`. Checking at every call site is whack-a-mole, and `errors.Is(err, nil)` has the same problem anyway. The broader rule is that a function returning an error should say `error` in its signature, full stop."
+        },
+        {
+          "id": "typed-nil-symptom",
+          "type": "mcq",
+          "prompt": "You hit this bug and print the error with `%v`. What do you see?",
+          "choices": [
+            "The message from Error(), because a nil pointer receiver is legal",
+            "`<nil>`, because the underlying value is nil",
+            "A panic from dereferencing a nil pointer",
+            "An empty string"
+          ],
+          "answer": 0,
+          "explain": "`fmt` sees a non-nil error and calls `Error()`. The receiver is nil, but calling a method on a nil pointer is fine as long as the body does not dereference it — so you get a real message describing a failure that never happened. If the body *does* touch a field, you get a nil pointer panic inside your logging instead.",
+          "tag": "symptom"
+        }
+      ]
+    },
+    {
+      "id": "assertions",
+      "title": "Type assertions and type switches",
+      "brief": "To get the concrete value back out of an interface you **assert** it. Always prefer the comma-ok form:\n\n- `v := x.(Foo)` — panics if `x` does not hold a `Foo`\n- `v, ok := x.(Foo)` — `ok` is false instead, and `v` is the zero value\n\nFor several possibilities, a **type switch** reads better and gives you a correctly typed `v` in each branch.\n\n`any` is an alias for `interface{}` as of Go 1.18 — the same type, a shorter name. An `any` tells you nothing, so every use of one ends in an assertion.",
+      "examples": [
+        {
+          "label": "Comma-ok, and what happens without it",
+          "lang": "go",
+          "code": "var x any = \"hello\"\n\nn := x.(int)        // panic: interface conversion:\n                    //   interface {} is string, not int\n\nn, ok := x.(int)    // n == 0, ok == false - no panic",
+          "note": "The panic message names both the actual and the expected type, which makes it one of the easier runtime failures to diagnose."
+        },
+        {
+          "label": "A type switch",
+          "lang": "go",
+          "code": "switch v := x.(type) {\ncase string:\n\treturn len(v)        // v is a string here\ncase []byte:\n\treturn len(v)        // and a []byte here\ncase nil:\n\treturn 0             // matches a nil interface\ndefault:\n\treturn -1\n}",
+          "note": "`case nil` matches when the interface itself is nil — it is the only way to handle that inside the switch."
+        }
+      ],
+      "items": [
+        {
+          "id": "assert-panic",
+          "type": "mcq",
+          "prompt": "`var x any = \"hello\"`, then `n := x.(int)`.",
+          "code": {
+            "lang": "log",
+            "label": "runtime",
+            "text": "panic: interface conversion: interface {} is string, not int"
+          },
+          "choices": [
+            "It panics — the single-value form has no way to report failure",
+            "`n` is 0 and execution continues",
+            "It does not compile; string and int are unrelated",
+            "`n` is 0 and a runtime error is returned"
+          ],
+          "answer": 0,
+          "explain": "The one-value form panics. Use `n, ok := x.(int)` anywhere the type is not guaranteed. The single-value form is reasonable only when you have just checked the type, or when being wrong genuinely is a bug worth crashing on."
+        },
+        {
+          "id": "typeswitch-order",
+          "type": "order",
+          "prompt": "Put the evaluation of `switch v := x.(type)` in order for `x` holding a `[]byte`.",
+          "steps": [
+            "The dynamic type stored in the interface is read",
+            "Each case is tested in source order for a match",
+            "The []byte case matches",
+            "v is bound as a []byte, typed for that branch only"
+          ],
+          "explain": "`v` has a different static type in each branch, which is the whole advantage over a chain of assertions. Cases are tested in order, so a broad one like `case error` placed above a narrow one shadows it — the same trap as ordering `if/else` badly."
+        },
+        {
+          "id": "any-alias",
+          "type": "mcq",
+          "prompt": "What is the relationship between `any` and `interface{}`?",
+          "choices": [
+            "`any` is an alias for `interface{}` — identical types, added in Go 1.18",
+            "`any` is a new type that also matches generic type parameters",
+            "`any` is an interface with no methods; `interface{}` can hold nil only",
+            "`any` is constrained to comparable types"
+          ],
+          "answer": 0,
+          "explain": "A true alias, so they are interchangeable everywhere and `gofmt -r` can swap one for the other. It was introduced with generics because `interface{}` reads badly in a type-parameter list. Neither tells you anything about the value, so both lead to an assertion."
+        },
+        {
+          "id": "assert-vs-convert",
+          "type": "mcq",
+          "prompt": "`x` is an `any` holding an `int`. Why is `x.(int)` not the same as `int(x)`?",
+          "choices": [
+            "Assertion pulls a concrete type out of an interface; conversion changes one concrete type to another",
+            "They are the same; the two syntaxes are interchangeable",
+            "Conversion is checked at runtime, assertion at compile time",
+            "`int(x)` works but truncates, `x.(int)` does not"
+          ],
+          "answer": 0,
+          "explain": "Different operations entirely. `int(x)` does not compile on an interface, because there is nothing to convert — the question is what is *inside*. Assertion asks that at runtime; conversion is a compile-time reinterpretation between known types."
+        }
+      ]
+    },
+    {
+      "id": "composition",
+      "title": "Small interfaces, composed",
+      "brief": "The standard library's interfaces are mostly one method, and bigger ones are built by **embedding** the small ones:\n\n- `io.Reader` — `Read(p []byte) (n int, err error)`\n- `io.Writer` — `Write(p []byte) (n int, err error)`\n- `io.ReadWriter` — literally `interface { Reader; Writer }`\n\nBecause satisfaction is structural, anything with the right method plugs into the whole ecosystem: files, network connections, HTTP bodies, `strings.Reader`, `bytes.Buffer`, gzip streams. `io.Copy` works on all of them and knows about none of them.\n\n`fmt.Stringer` — a single `String() string` — is the one to implement on your own types, because `fmt` picks it up everywhere automatically.",
+      "examples": [
+        {
+          "label": "Composition in the stdlib",
+          "lang": "go",
+          "code": "type Reader interface { Read(p []byte) (n int, err error) }\ntype Writer interface { Write(p []byte) (n int, err error) }\n\ntype ReadWriter interface {\n\tReader\n\tWriter\n}",
+          "note": "`io.ReadWriter` adds no methods of its own. Anything satisfying both halves satisfies it, with no declaration anywhere."
+        },
+        {
+          "label": "Stringer is free formatting",
+          "lang": "go",
+          "code": "type Status int\n\nfunc (s Status) String() string {\n\tswitch s {\n\tcase 0:\n\t\treturn \"pending\"\n\tcase 1:\n\t\treturn \"running\"\n\t}\n\treturn \"unknown\"\n}\n\nfmt.Printf(\"%v\\n\", Status(1))   // running, not 1",
+          "note": "Implement `String()` on your enum types and every log line gets readable for free. Careful though: calling `fmt.Sprintf(\"%v\", s)` *inside* String() recurses until the stack blows."
+        }
+      ],
+      "items": [
+        {
+          "id": "readwriter",
+          "type": "mcq",
+          "prompt": "Your type has `Read` and `Write` with the right signatures, and mentions neither `io.Reader` nor `io.ReadWriter`. Does it satisfy `io.ReadWriter`?",
+          "choices": [
+            "Yes — it has both methods, which is the entire requirement",
+            "No — it must embed io.ReadWriter to satisfy it",
+            "Only if the methods are declared in the same file",
+            "Only if it also implements io.Closer"
+          ],
+          "answer": 0,
+          "explain": "Yes. `io.ReadWriter` is just `Reader` and `Writer` embedded together, and satisfaction is structural, so having both methods is sufficient. This is why `io.Copy(dst, src)` works between a file and a socket and a gzip stream without any of them knowing about each other."
+        },
+        {
+          "id": "stringer-recursion",
+          "type": "mcq",
+          "prompt": "Inside `func (s Status) String() string` you write `return fmt.Sprintf(\"%v\", s)`. What happens?",
+          "choices": [
+            "Infinite recursion — Sprintf calls String(), which calls Sprintf",
+            "It prints the underlying int, since %v on the receiver bypasses String()",
+            "A compile error about a recursive method",
+            "It prints the zero value and stops"
+          ],
+          "answer": 0,
+          "explain": "`%v` on a value with a `String()` method calls that method, so it calls itself until the stack overflows — `runtime: goroutine stack exceeds` and a very long trace. To print the underlying value, convert first: `fmt.Sprintf(\"%d\", int(s))`. `go vet`'s stringmethods-related checks catch some of these, but not all.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "stdlib-match",
+          "type": "match",
+          "prompt": "Match each single-method interface to the method it requires.",
+          "pairs": [
+            [
+              "io.Reader",
+              "Read(p []byte) (int, error)"
+            ],
+            [
+              "io.Writer",
+              "Write(p []byte) (int, error)"
+            ],
+            [
+              "fmt.Stringer",
+              "String() string"
+            ],
+            [
+              "error",
+              "Error() string"
+            ]
+          ],
+          "explain": "`error` is an ordinary one-method interface, not a language keyword — which is why any type with `Error() string` is an error, and why you can attach fields to one and pull them back out with `errors.As`."
+        },
+        {
+          "id": "iface-nil-method",
+          "type": "mcq",
+          "prompt": "`var w io.Writer` and nothing assigned. You call `w.Write(b)`.",
+          "choices": [
+            "Panic: nil pointer dereference — there is no method to dispatch to",
+            "It is a no-op; writing to a nil interface discards the bytes",
+            "A compile error; w is not initialized",
+            "It returns (0, io.ErrClosedPipe)"
+          ],
+          "answer": 0,
+          "explain": "A nil *interface* has no type half, so there is no method to call and it panics — unlike a nil *pointer* with a method, which dispatches fine. That distinction catches people: `var p *T; p.M()` can work, while `var i I; i.M()` never can."
+        }
+      ]
+    }
+  ]
+}

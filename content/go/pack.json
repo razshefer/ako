@@ -7,7 +7,9 @@
   "units": [
     "01-values",
     "02-collections",
-    "03-structs"
+    "03-structs",
+    "04-interfaces",
+    "05-errors"
   ],
   "flows": [
     "01-request-through-a-handler"
