@@ -1,5 +1,6 @@
 {
   "packs": [
-    "k8s-architecture"
+    "k8s-architecture",
+    "go"
   ]
 }

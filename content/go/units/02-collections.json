@@ -1,0 +1,343 @@
+{
+  "id": "collections",
+  "title": "Slices and maps",
+  "summary": "The two data structures you use constantly, and the aliasing that surprises everyone.",
+  "concepts": [
+    {
+      "id": "slice-header",
+      "title": "What a slice actually is",
+      "brief": "A slice is **not** an array. It is a small three-field value — a pointer to an array, a **length**, and a **capacity** — and it is copied by value like any other struct.\n\n- `len(s)` — how many elements you can index right now\n- `cap(s)` — how many fit before the backing array must be replaced\n\nSlicing never copies the data. `b := a[1:3]` makes a new header pointing into `a`'s array. Both now share the same memory, which is the source of nearly every slice surprise.",
+      "examples": [
+        {
+          "label": "Three fields, one array",
+          "lang": "go",
+          "code": "a := []int{10, 20, 30, 40, 50}\nb := a[1:3]\n\nlen(b)  // 2   - elements 20, 30\ncap(b)  // 4   - from index 1 to the end of a's array\n\nb[0] = 99\nfmt.Println(a)  // [10 99 30 40 50]  <- a changed",
+          "note": "`cap` of a re-slice runs to the end of the backing array, not to the end of the slice you cut from."
+        },
+        {
+          "label": "Making one on purpose",
+          "lang": "go",
+          "code": "s := make([]int, 0, 100)   // len 0, cap 100\ns = append(s, 1)           // no allocation, cap was already there\n\nt := make([]int, 5)        // len 5, cap 5 - five zeroes, already addressable\nt[0] = 1                   // fine\n\nvar u []int                // nil: len 0, cap 0\nu = append(u, 1)           // fine - append allocates",
+          "note": "`make([]int, 5)` and `make([]int, 0, 5)` are very different: the first has five usable zeroes, the second has none."
+        }
+      ],
+      "items": [
+        {
+          "id": "slice-shares",
+          "type": "mcq",
+          "prompt": "`a := []int{10,20,30,40,50}`, then `b := a[1:3]`, then `b[0] = 99`. What is `a`?",
+          "choices": [
+            "[10 99 30 40 50] — b points into a's array",
+            "[10 20 30 40 50] — slicing copies the elements",
+            "[99 20 30 40 50] — b[0] maps to a[0]",
+            "It panics; b has length 2 and cannot be written to"
+          ],
+          "answer": 0,
+          "explain": "Slicing is a view, not a copy. `b[0]` is `a[1]`. If you need independence you must copy explicitly: `b := make([]int, 2); copy(b, a[1:3])`. This is the mechanism behind \"I passed a slice to a function and it modified my data\" — the header was copied, the array was not."
+        },
+        {
+          "id": "cap-of-reslice",
+          "type": "mcq",
+          "prompt": "`a` has length 5. What are `len` and `cap` of `a[1:3]`?",
+          "choices": [
+            "len 2, cap 4 — capacity runs to the end of the backing array",
+            "len 2, cap 2 — capacity matches the new length",
+            "len 3, cap 5 — the bounds are inclusive",
+            "len 2, cap 5 — capacity is always the original array's size"
+          ],
+          "answer": 0,
+          "explain": "len 2, cap 4: from index 1 to the end of the array. That extra capacity is what lets a later `append` to this slice overwrite `a[3]` instead of allocating. The three-index form `a[1:3:3]` caps it at 2 and makes the next append allocate — the standard way to hand out a slice safely."
+        },
+        {
+          "id": "make-forms",
+          "type": "mcq",
+          "prompt": "`s := make([]int, 5)`. What does `s[0] = 1` do, and what does `len(s)` return?",
+          "choices": [
+            "Works; len is 5 — the slice already holds five zeroes",
+            "Panics; len is 0 — the second argument is capacity",
+            "Works; len is 0 and becomes 1 after the assignment",
+            "Does not compile; make needs three arguments for slices"
+          ],
+          "answer": 0,
+          "explain": "`make([]int, 5)` is length 5 — five usable zeroes. The two-argument form sets length; the three-argument form `make([]int, 0, 5)` sets length and capacity. Mixing them up gives you either a panic on index, or a slice with five unwanted zeroes in front of your appended data.",
+          "tag": "gotcha"
+        },
+        {
+          "id": "nil-slice-append",
+          "type": "multi",
+          "prompt": "`var s []int` — a nil slice. Which of these work without panicking?",
+          "choices": [
+            "`len(s)`",
+            "`s = append(s, 1)`",
+            "`for _, v := range s`",
+            "`s[0] = 1`"
+          ],
+          "answers": [
+            0,
+            1,
+            2
+          ],
+          "explain": "Everything except indexing. A nil slice is a perfectly good empty slice: `len` is 0, `range` runs zero times, and `append` allocates on first use. Only indexing fails, with `index out of range [0] with length 0`. This is why idiomatic Go declares `var results []T` and appends, with no initialization."
+        }
+      ]
+    },
+    {
+      "id": "append-aliasing",
+      "title": "append, and when it copies",
+      "brief": "`append` has two completely different behaviors and you cannot tell which you got without looking at `cap`:\n\n- **Room left** (`len < cap`) — it writes into the existing array and returns a header with a bigger length. Anything else sharing that array **sees the change**.\n- **No room** — it allocates a new, larger array, copies everything over, and returns a header pointing somewhere else. The original is now **detached**.\n\nThis is why `append`'s result must always be assigned: `s = append(s, x)`. Ignoring the return value is a bug the compiler does catch, because the result would be unused.",
+      "examples": [
+        {
+          "label": "Same call, two different outcomes",
+          "lang": "go",
+          "code": "a := make([]int, 3, 4)   // [0 0 0] with room for one more\nb := a[:2]               // shares the array\n\nb = append(b, 99)        // room available -> writes a[2]\nfmt.Println(a)           // [0 0 99]   <- a changed\n\nc := make([]int, 3, 3)   // no spare room\nd := c[:2]\nd = append(d, 99)        // no room -> new array\nfmt.Println(c)           // [0 0 0]    <- c untouched",
+          "note": "Identical code, opposite results, decided entirely by spare capacity. This is the bug that only shows up once the input grows."
+        },
+        {
+          "label": "Appending to a shared slice in a loop",
+          "lang": "go",
+          "code": "// Filtering in place - a common trick\nout := in[:0]            // zero length, full capacity, SAME array\nfor _, v := range in {\n\tif keep(v) {\n\t\tout = append(out, v)   // overwrites in[] as it goes\n\t}\n}\n// `in` is now scrambled. Fine if you expected it; a bug if you did not.",
+          "note": "`in[:0]` is the idiomatic zero-allocation filter. It is also a trap if anyone still holds `in`."
+        }
+      ],
+      "items": [
+        {
+          "id": "append-capacity",
+          "type": "mcq",
+          "prompt": "`a := make([]int, 3, 4)`, `b := a[:2]`, then `b = append(b, 99)`. What is `a`?",
+          "choices": [
+            "[0 0 99] — there was spare capacity, so append wrote into a's array",
+            "[0 0 0] — append always allocates a new array",
+            "[0 0 99 0] — a grows to length 4",
+            "It panics — b cannot grow past its length"
+          ],
+          "answer": 0,
+          "explain": "`cap(b)` is 4 and `len(b)` is 2, so there was room and append wrote in place, clobbering `a[2]`. Had the capacity been exactly 3, append would have allocated and `a` would be untouched. Whether a shared slice gets corrupted depends on capacity you probably never checked.",
+          "tag": "aliasing"
+        },
+        {
+          "id": "append-assign",
+          "type": "mcq",
+          "prompt": "Why must you write `s = append(s, x)` rather than just `append(s, x)`?",
+          "choices": [
+            "append returns a new header; the original s may still have the old length",
+            "Purely stylistic — append also mutates s in place",
+            "Because append can panic if the result is discarded",
+            "It is required only for slices created with make"
+          ],
+          "answer": 0,
+          "explain": "`s` is a value holding pointer/len/cap. `append` cannot change *your* copy of that value, so it returns a new one — with a longer length, and possibly a different pointer. Discarding it loses both. Go makes this one hard to get wrong: `append(s, x)` alone is a compile error, since its result is unused."
+        },
+        {
+          "id": "copy-independent",
+          "type": "fill",
+          "prompt": "Which builtin copies elements from one slice into another that already has length?",
+          "accept": [
+            "copy",
+            "copy()"
+          ],
+          "placeholder": "builtin",
+          "explain": "`copy(dst, src)`. It copies `min(len(dst), len(src))` elements and returns that count — so `copy(make([]int, 0), src)` copies nothing, a classic mistake. Allocate with the right *length*, not capacity: `dst := make([]int, len(src))`."
+        },
+        {
+          "id": "detach-order",
+          "type": "order",
+          "prompt": "Put the steps of an append that outgrows its capacity in order.",
+          "steps": [
+            "append sees len == cap, so there is no room",
+            "A new, larger array is allocated",
+            "The existing elements are copied into it",
+            "The new element is written after them",
+            "A new header pointing at the new array is returned"
+          ],
+          "explain": "The copy is why appending in a loop without a capacity hint is O(n) allocations and a lot of copying. Growth is amortized — roughly doubling for small slices and tapering off — but if you know the final size, `make([]T, 0, n)` skips all of it."
+        }
+      ]
+    },
+    {
+      "id": "maps",
+      "title": "Maps",
+      "brief": "A hash table with built-in syntax. Three things decide most of how you use it:\n\n- The zero value is **nil**: reads work, writes panic. Always `make` it.\n- Lookup always succeeds. A missing key gives you the value type's zero, which is why the **comma-ok** form exists: `v, ok := m[k]`.\n- A map value is **not addressable**. You cannot take `&m[k]`, and you cannot assign to a field of a struct stored by value in a map.\n\nMaps are also **not safe for concurrent use**. Concurrent writes produce `fatal error: concurrent map writes`, which is a runtime crash that `recover` cannot catch.",
+      "examples": [
+        {
+          "label": "Comma-ok, and why zero is ambiguous",
+          "lang": "go",
+          "code": "counts := map[string]int{\"a\": 0}\n\ncounts[\"a\"]        // 0 - present, value zero\ncounts[\"zzz\"]      // 0 - absent\n\nv, ok := counts[\"a\"]     // 0, true\nv, ok = counts[\"zzz\"]    // 0, false",
+          "note": "Without comma-ok there is no way to tell \"stored zero\" from \"not there\". The same form works for type assertions and channel receives."
+        },
+        {
+          "label": "Struct values in a map are not addressable",
+          "lang": "go",
+          "code": "type P struct{ N int }\nm := map[string]P{\"a\": {N: 1}}\n\nm[\"a\"].N = 2\n// ./main.go:8:2: cannot assign to struct field m[\"a\"].N in map\n\n// Either store pointers...\nmp := map[string]*P{\"a\": {N: 1}}\nmp[\"a\"].N = 2            // fine\n\n// ...or read, modify, write back\np := m[\"a\"]\np.N = 2\nm[\"a\"] = p",
+          "note": "Maps can rehash and move their contents, so Go refuses to hand out a pointer into one."
+        }
+      ],
+      "items": [
+        {
+          "id": "comma-ok",
+          "type": "mcq",
+          "prompt": "`m := map[string]int{\"a\": 0}`. How do you distinguish a stored zero from a missing key?",
+          "choices": [
+            "`v, ok := m[\"a\"]` — ok is false only when the key is absent",
+            "Compare against nil: `if m[\"a\"] != nil`",
+            "Use `len(m)` before and after the lookup",
+            "You cannot; a stored zero is indistinguishable from a missing key"
+          ],
+          "answer": 0,
+          "explain": "The comma-ok form. A plain lookup returns the zero value for a missing key, so `if m[k] != 0` conflates \"absent\" with \"present and zero\" — a real bug in anything counting things or holding `map[string]bool`. The same two-value form works for `v, ok := x.(T)` and `v, ok := <-ch`."
+        },
+        {
+          "id": "map-field-assign",
+          "type": "mcq",
+          "prompt": "`m` is a `map[string]P` where P is a struct. Why does `m[\"a\"].N = 2` fail to compile?",
+          "code": {
+            "lang": "log",
+            "label": "go build",
+            "text": "./main.go:8:2: cannot assign to struct field m[\"a\"].N in map"
+          },
+          "choices": [
+            "Map values are not addressable — a map may move them when it rehashes",
+            "The map was declared with a value type instead of a pointer type",
+            "Struct fields can only be assigned through a method",
+            "The map key must be addressable before its value can be"
+          ],
+          "answer": 0,
+          "explain": "Growing a map can relocate every entry, so a pointer into it would dangle — Go refuses to create one. Two fixes: store `*P` instead of `P`, or do read-modify-write. Storing pointers is usually right when the struct is mutated often, and wrong when you wanted value semantics.",
+          "tag": "compiler"
+        },
+        {
+          "id": "concurrent-map",
+          "type": "mcq",
+          "prompt": "Two goroutines write to the same plain map at the same time. What is the most likely outcome?",
+          "choices": [
+            "`fatal error: concurrent map writes` — the process dies, and recover cannot stop it",
+            "A panic that the http server recovers like any other",
+            "One write silently wins; maps are atomic per key",
+            "Nothing — the runtime locks maps internally"
+          ],
+          "answer": 0,
+          "explain": "`fatal error`, not `panic`. The runtime has a cheap detector for this and it kills the process immediately — `recover` does not apply to fatal errors. Guard the map with a `sync.Mutex`, or use `sync.Map` for the narrow cases it suits. `go test -race` finds this long before production.",
+          "tag": "crash"
+        },
+        {
+          "id": "delete-nil",
+          "type": "multi",
+          "prompt": "`var m map[string]int` — a nil map. Which of these are safe?",
+          "choices": [
+            "`len(m)`",
+            "`v, ok := m[\"x\"]`",
+            "`delete(m, \"x\")`",
+            "`m[\"x\"] = 1`"
+          ],
+          "answers": [
+            0,
+            1,
+            2
+          ],
+          "explain": "Everything but the write. `delete` on a nil map is explicitly a no-op, and reads return zero with `ok` false. Only assignment panics. So a nil map is a usable read-only empty map — handy for optional config, dangerous the moment something writes to it."
+        },
+        {
+          "id": "make-map-fill",
+          "type": "fill",
+          "prompt": "Write the expression that creates an empty, writable `map[string]int` using the builtin.",
+          "accept": [
+            "make(map[string]int)",
+            "map[string]int{}"
+          ],
+          "placeholder": "expression",
+          "explain": "`make(map[string]int)`, or the literal `map[string]int{}` — both give a real, writable map. `make` takes an optional size hint, `make(map[string]int, 1000)`, which pre-allocates buckets and avoids rehashing when you know roughly how many keys are coming."
+        }
+      ]
+    },
+    {
+      "id": "iteration",
+      "title": "range, and what it gives you",
+      "brief": "`range` hands you a **copy** of each element. Assigning to the loop variable changes nothing in the collection — to mutate, index into it: `s[i].Field = x`.\n\nMap iteration order is **deliberately randomized**. The runtime starts at a random bucket on every run, specifically so nobody can write code that depends on an order that was never guaranteed. If you need a stable order, collect the keys and sort them.\n\nWhat `range` yields depends on the type: index+value for slices and arrays, key+value for maps, byte-offset+rune for strings, and a single value for channels.",
+      "examples": [
+        {
+          "label": "The loop variable is a copy",
+          "lang": "go",
+          "code": "type Item struct{ Done bool }\nitems := []Item{{}, {}}\n\nfor _, it := range items {\n\tit.Done = true          // modifies a copy, thrown away\n}\nfmt.Println(items)              // [{false} {false}]\n\nfor i := range items {\n\titems[i].Done = true    // index in - this works\n}",
+          "note": "This is the slice equivalent of the value-receiver mistake, and just as silent."
+        },
+        {
+          "label": "Sorted iteration over a map",
+          "lang": "go",
+          "code": "keys := make([]string, 0, len(m))\nfor k := range m {\n\tkeys = append(keys, k)\n}\nsort.Strings(keys)\n\nfor _, k := range keys {\n\tfmt.Println(k, m[k])\n}",
+          "note": "The single-variable form `for k := range m` gives keys only. For a slice, `for i := range s` gives indexes only."
+        }
+      ],
+      "items": [
+        {
+          "id": "range-copy",
+          "type": "mcq",
+          "prompt": "What does this print?",
+          "code": {
+            "lang": "go",
+            "label": "main.go",
+            "text": "type Item struct{ Done bool }\nitems := []Item{{}, {}}\n\nfor _, it := range items {\n\tit.Done = true\n}\nfmt.Println(items)"
+          },
+          "choices": [
+            "[{false} {false}] — `it` is a copy of each element",
+            "[{true} {true}] — range yields references into the slice",
+            "It does not compile; `it` is not addressable",
+            "[{true} {false}] — only the first iteration takes effect"
+          ],
+          "answer": 0,
+          "explain": "`range` copies each element into the loop variable, so the writes land on throwaway copies. Use the index: `for i := range items { items[i].Done = true }`. The copy also costs real time for big structs — ranging over `[]BigStruct` copies every one of them.",
+          "tag": "classic bug"
+        },
+        {
+          "id": "map-order",
+          "type": "mcq",
+          "prompt": "You range over the same unmodified map twice in one program run. Is the order the same?",
+          "choices": [
+            "Not guaranteed — the runtime randomizes the starting point each time",
+            "Yes, within a single run it is stable; only across runs does it change",
+            "Yes, maps iterate in key insertion order",
+            "Yes, maps iterate in sorted key order"
+          ],
+          "answer": 0,
+          "explain": "Randomized per iteration, on purpose. Early Go had incidentally-stable ordering, people depended on it, and their code broke when the implementation changed — so the team made it visibly random. To get deterministic output, extract the keys and `sort` them."
+        },
+        {
+          "id": "range-yields",
+          "type": "match",
+          "prompt": "Match what `for a, b := range x` yields for each type of x.",
+          "pairs": [
+            [
+              "a slice",
+              "index and a copy of the element"
+            ],
+            [
+              "a map",
+              "key and value, in random order"
+            ],
+            [
+              "a string",
+              "byte offset and a rune"
+            ],
+            [
+              "a channel",
+              "received values only — one variable, not two"
+            ]
+          ],
+          "explain": "The string case catches people: the index is a **byte** offset, so it jumps by more than one across multi-byte characters. The channel case has no second variable at all, and the loop ends when the channel is closed."
+        },
+        {
+          "id": "loopvar-122",
+          "type": "mcq",
+          "prompt": "`for _, v := range items { go func() { use(v) }() }`. In Go 1.22 and later, what does each goroutine see?",
+          "choices": [
+            "Its own value — loop variables became per-iteration in Go 1.22",
+            "The last element, because all closures share one variable",
+            "A random element, depending on scheduling",
+            "A compile error; closures cannot capture loop variables"
+          ],
+          "answer": 0,
+          "explain": "Per-iteration since Go 1.22. Before that, every closure captured the one shared `v` and usually saw the final element — the single most reported Go gotcha ever, which is why it was changed. The old workaround `v := v` is now redundant but harmless. The behavior follows the `go` directive in `go.mod`, so an old module keeps the old semantics.",
+          "tag": "version"
+        }
+      ]
+    }
+  ]
+}
