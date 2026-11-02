@@ -1,0 +1,353 @@
+{
+  "id": "structs",
+  "title": "Structs, methods and pointers",
+  "summary": "Value or pointer receiver, what a capital letter means, and what copying a struct costs you.",
+  "concepts": [
+    {
+      "id": "receivers",
+      "title": "Value and pointer receivers",
+      "brief": "A method is a function with a receiver. The receiver can be a **value** or a **pointer**, and the choice decides whether the method can change anything:\n\n- `func (s Store) Add()` — `s` is a fresh copy. Changes to its fields are lost.\n- `func (s *Store) Add()` — `s` points at the original. Changes stick.\n\nCalling is forgiving: on an **addressable** value, `store.Add()` compiles for both, because Go inserts `(&store).Add()` for you. That convenience is exactly why the value-receiver bug is so easy to write — the call site looks identical.\n\nThe place it stops being forgiving is **interfaces**. The method set of `T` contains only its value-receiver methods; the method set of `*T` contains both. So a `T` does not satisfy an interface whose method has a pointer receiver.",
+      "examples": [
+        {
+          "label": "Same call site, opposite outcomes",
+          "lang": "go",
+          "code": "type Counter struct{ n int }\n\nfunc (c Counter) IncVal()  { c.n++ }   // lost\nfunc (c *Counter) IncPtr() { c.n++ }   // kept\n\nvar c Counter\nc.IncVal()\nc.IncVal()\nfmt.Println(c.n)   // 0\n\nc.IncPtr()\nfmt.Println(c.n)   // 1   - Go rewrote this as (&c).IncPtr()",
+          "note": "Nothing at the call site tells you which you got. You have to look at the method."
+        },
+        {
+          "label": "Where the method set bites",
+          "lang": "log",
+          "code": "cannot use buf (variable of type Buffer) as io.Writer value in argument to fmt.Fprintf: Buffer does not implement io.Writer (method Write has pointer receiver)",
+          "note": "The fix is almost always `&buf`. The error text names the exact method, which makes it one of Go's more helpful messages."
+        }
+      ],
+      "items": [
+        {
+          "id": "ptr-method-on-value",
+          "type": "mcq",
+          "prompt": "`IncPtr` has a pointer receiver. `c` is a local variable of type `Counter`. Does `c.IncPtr()` compile?",
+          "choices": [
+            "Yes — c is addressable, so Go rewrites it as (&c).IncPtr()",
+            "No — you must write (&c).IncPtr() yourself",
+            "Yes, but it operates on a copy, so the change is lost",
+            "Only if Counter has no value-receiver methods"
+          ],
+          "answer": 0,
+          "explain": "Go takes the address automatically for any addressable value, so both receiver kinds look the same at the call site. The exception is a value that has no address — a map element, or the result of a function call. `m[\"k\"].IncPtr()` does not compile for exactly that reason."
+        },
+        {
+          "id": "method-set-interface",
+          "type": "mcq",
+          "prompt": "`Write` is defined on `*Buffer`. You pass a `Buffer` value where an `io.Writer` is wanted.",
+          "code": {
+            "lang": "log",
+            "label": "go build",
+            "text": "cannot use buf (variable of type Buffer) as io.Writer value in argument to fmt.Fprintf: Buffer does not implement io.Writer (method Write has pointer receiver)"
+          },
+          "choices": [
+            "Pass `&buf` — only *Buffer's method set includes pointer-receiver methods",
+            "Add a value receiver version of Write as well",
+            "Convert it: `io.Writer(buf)`",
+            "Declare buf with `var buf *Buffer` and leave it nil"
+          ],
+          "answer": 0,
+          "explain": "`&buf`. `*T`'s method set has every method; `T`'s has only the value-receiver ones. The asymmetry exists because Go can always take the address of an addressable variable, but an interface holds a copy, and there would be nothing to take the address *of*. This is the single most common reason a type \"mysteriously\" fails to implement an interface.",
+          "tag": "compiler"
+        },
+        {
+          "id": "receiver-consistency",
+          "type": "mcq",
+          "prompt": "A type has six methods. Five mutate state and need pointer receivers. What should the sixth, a read-only `String()`, use?",
+          "choices": [
+            "A pointer receiver, for consistency across the whole type",
+            "A value receiver, since it does not mutate anything",
+            "Either — the compiler normalizes them",
+            "A value receiver, so it can be called on map elements"
+          ],
+          "answer": 0,
+          "explain": "Mixing receiver kinds on one type is the standard advice to avoid: it makes the method set depend on which method you are reaching for, and `T` ends up satisfying some interfaces while `*T` satisfies others. Pick one per type. If any method needs a pointer, they all take a pointer."
+        },
+        {
+          "id": "nil-receiver",
+          "type": "mcq",
+          "prompt": "`var c *Counter` — a nil pointer. You call `c.Describe()`, whose body never touches any field. What happens?",
+          "choices": [
+            "It runs fine — a nil pointer receiver is legal until you dereference it",
+            "It panics immediately; calling a method on nil is never allowed",
+            "It does not compile — nil pointers cannot be receivers",
+            "It runs, but the receiver is silently replaced with a zero value"
+          ],
+          "answer": 0,
+          "explain": "Legal. A method call on a nil pointer passes nil as the receiver; it only panics if the body dereferences it. Some types use this deliberately — a nil `*TreeNode` behaving as an empty tree. It also explains a confusing trace: the panic points inside the method, not at the call."
+        },
+        {
+          "id": "receiver-fill",
+          "type": "fill",
+          "prompt": "Complete the receiver so `Add` can modify the Counter it is called on: `func (c ____ Counter) Add()`",
+          "accept": [
+            "*",
+            "*Counter",
+            "pointer"
+          ],
+          "placeholder": "receiver type",
+          "explain": "`*Counter` — a pointer receiver. Without the star you get a copy and every mutation is discarded, with no warning from the compiler or `go vet`. If a method's job is to change the receiver, it needs the star."
+        }
+      ]
+    },
+    {
+      "id": "exported",
+      "title": "Capital letters and struct tags",
+      "brief": "Go has no `public` or `private`. An identifier beginning with an **uppercase letter** is visible outside its package; everything else is package-private. That applies to types, functions, methods, constants and struct fields alike.\n\nIt is not only about other packages. Anything using **reflection** — `encoding/json`, YAML, `database/sql`, template engines — can only see exported fields. A lowercase field is invisible to all of them, silently.\n\n**Struct tags** are string metadata attached to a field, read at runtime by those same libraries. The compiler does not check them, so a typo in a tag is not an error — it just stops working.",
+      "examples": [
+        {
+          "label": "What json can and cannot see",
+          "lang": "go",
+          "code": "type User struct {\n\tName     string `json:\"name\"`\n\tEmail    string `json:\"email,omitempty\"`\n\tPassword string `json:\"-\"`\n\tinternal int    `json:\"internal\"`\n}\n\n// Marshal produces:\n//   {\"name\":\"raz\"}\n//\n// Email  - omitted, empty and tagged omitempty\n// Password - never emitted, tagged \"-\"\n// internal - invisible: unexported, tag ignored entirely",
+          "note": "`-` means never serialize. `omitempty` means skip when the value is the zero value — which is why an explicit `false` or `0` disappears too."
+        },
+        {
+          "label": "The tag is just a string",
+          "lang": "go",
+          "code": "Name string `json:name`     // missing quotes - silently ignored\nName string `JSON:\"name\"`   // wrong key - silently ignored\nName string `json:\"name\"`   // correct",
+          "note": "`go vet`'s structtag check catches malformed tags and json-tagged unexported fields. It is worth running in CI for this reason alone."
+        }
+      ],
+      "items": [
+        {
+          "id": "unexported-json",
+          "type": "mcq",
+          "prompt": "A struct field is `count int` with a `json:\"count\"` tag. What does `json.Marshal` emit for it?",
+          "choices": [
+            "Nothing — unexported fields are skipped and the tag is ignored",
+            "`\"count\":0` — the tag makes it visible",
+            "An error about marshalling an unexported field",
+            "`\"count\":null`"
+          ],
+          "answer": 0,
+          "explain": "Nothing at all, with no error. Reflection cannot read or set unexported fields from outside the declaring package, so `encoding/json` skips them and the tag is dead text. \"Why is my JSON empty?\" is nearly always a lowercase letter. `go vet` flags this exact case.",
+          "tag": "classic bug"
+        },
+        {
+          "id": "tag-match",
+          "type": "match",
+          "prompt": "Match each json struct tag to what it does.",
+          "pairs": [
+            [
+              "json:\"name\"",
+              "Uses \"name\" as the key instead of the field name"
+            ],
+            [
+              "json:\"-\"",
+              "Never serialized at all"
+            ],
+            [
+              "json:\",omitempty\"",
+              "Dropped when the value is its zero value"
+            ],
+            [
+              "no tag at all",
+              "Uses the exact field name, capital included"
+            ]
+          ],
+          "explain": "The leading comma in `\",omitempty\"` matters — it means \"keep the default name, add this option\". Write `\"omitempty\"` without it and you have renamed the field to `omitempty`, which is a real bug people ship."
+        },
+        {
+          "id": "exported-multi",
+          "type": "multi",
+          "prompt": "Which of these are visible to code in another package?",
+          "choices": [
+            "`func Connect()`",
+            "`type Config struct`",
+            "`func newPool()`",
+            "A `Timeout` field inside an unexported type `config`"
+          ],
+          "answers": [
+            0,
+            1,
+            3
+          ],
+          "explain": "Three of them, and the last is the interesting one. A field is exported on its own first letter, so `Timeout` is exported even though `config` is not. Another package cannot *name* `config`, so it cannot declare one — but if an exported function hands one back, `cfg := pkg.New(); cfg.Timeout` compiles fine. It is also why an unexported type still marshals to JSON perfectly well. Only `newPool` is genuinely out of reach."
+        },
+        {
+          "id": "omitempty-false",
+          "type": "mcq",
+          "prompt": "`Enabled bool `json:\"enabled,omitempty\"`` and you set `Enabled = false`. What is in the JSON?",
+          "choices": [
+            "The key is missing — false is the zero value, so omitempty drops it",
+            "`\"enabled\":false`",
+            "`\"enabled\":null`",
+            "The key is missing only if the field is also a pointer"
+          ],
+          "answer": 0,
+          "explain": "It vanishes. `omitempty` means \"omit when zero\", and for a bool that is `false` — so you cannot distinguish \"set to false\" from \"not set\". The standard fix is `*bool`, where nil means absent and a pointer to false means explicitly false. The same trap applies to `0` and `\"\"`.",
+          "tag": "gotcha"
+        }
+      ]
+    },
+    {
+      "id": "copying",
+      "title": "Copying and comparing structs",
+      "brief": "Assigning a struct **copies every field**. Passing one to a function copies it. Storing one in a slice copies it. There are no references unless you use a pointer.\n\nThe copy is **shallow**. A slice, map or pointer field is copied as a header or an address, so the copy and the original still share whatever it points at.\n\n`==` works on structs only when **every field is comparable**. A struct containing a slice, a map or a func cannot be compared, and that is a compile error rather than a runtime one. For those, use `reflect.DeepEqual`.",
+      "examples": [
+        {
+          "label": "Shallow is the word that matters",
+          "lang": "go",
+          "code": "type S struct {\n\tN    int\n\tTags []string\n}\n\na := S{N: 1, Tags: []string{\"x\"}}\nb := a           // copies both fields\n\nb.N = 2\nb.Tags[0] = \"y\"\n\nfmt.Println(a.N)       // 1  - independent\nfmt.Println(a.Tags[0]) // \"y\"  - SHARED",
+          "note": "Two fields, two different outcomes, from one assignment. The int was copied; the slice header was copied and still points at the same array."
+        },
+        {
+          "label": "Comparability is checked at compile time",
+          "lang": "log",
+          "code": "./main.go:14:14: invalid operation: a == b (struct containing []string cannot be compared)",
+          "note": "Comparable structs can also be used as map keys. One slice field anywhere inside takes both abilities away."
+        }
+      ],
+      "items": [
+        {
+          "id": "shallow-copy",
+          "type": "mcq",
+          "prompt": "`b := a` where `a` is a struct with an `int` field `N` and a `[]string` field `Tags`. You set `b.N = 2` and `b.Tags[0] = \"y\"`. What changed in `a`?",
+          "choices": [
+            "Only Tags[0] — the int was copied, the slice's backing array is shared",
+            "Both — b is a reference to a",
+            "Neither — assignment deep-copies the struct",
+            "Only N — slices are copied by value, ints are not"
+          ],
+          "answer": 0,
+          "explain": "The copy is shallow. `N` is an independent int; `Tags` is an independent *header* pointing at the same array. This is why \"I passed the struct by value so it is safe\" is wrong whenever the struct holds a slice, map, pointer or channel. A deep copy has to be written by hand.",
+          "tag": "aliasing"
+        },
+        {
+          "id": "struct-compare",
+          "type": "mcq",
+          "prompt": "Your struct has a `[]string` field. You write `if a == b`.",
+          "choices": [
+            "Compile error — a struct containing a slice is not comparable",
+            "It compiles and compares the slices element by element",
+            "It compiles and compares the slice pointers",
+            "It compiles but panics at runtime on the slice field"
+          ],
+          "answer": 0,
+          "explain": "`invalid operation: a == b (struct containing []string cannot be compared)`. Slices, maps and funcs are not comparable, and that poisons any struct holding one — it also cannot be a map key. Use `reflect.DeepEqual` for an occasional check, or write an `Equal` method if it is on a hot path, because DeepEqual is slow and reflective.",
+          "tag": "compiler"
+        },
+        {
+          "id": "copylocks",
+          "type": "mcq",
+          "prompt": "Your struct embeds a `sync.Mutex`. You pass it to a function by value. `go vet` says: `passes lock by value`. Why does it matter?",
+          "choices": [
+            "The copy has its own lock, so the two copies no longer exclude each other",
+            "Copying a locked mutex deadlocks immediately",
+            "It is only a style warning; the lock still works",
+            "The mutex becomes nil in the copy and panics on Lock"
+          ],
+          "answer": 0,
+          "explain": "You end up with two independent mutexes guarding what you thought was one thing, so the mutual exclusion silently stops working — and it will look fine under light load. A type containing a mutex should always be passed and stored as a pointer. `go vet`'s copylocks check is on by default — but not in the reduced set that `go test` runs, so it only fires when you invoke vet yourself.",
+          "tag": "concurrency"
+        },
+        {
+          "id": "deepequal-fill",
+          "type": "fill",
+          "prompt": "Which standard-library function compares two values that contain slices or maps, where `==` will not compile?",
+          "accept": [
+            "reflect.DeepEqual",
+            "DeepEqual",
+            "reflect.DeepEqual()"
+          ],
+          "placeholder": "function",
+          "explain": "`reflect.DeepEqual(a, b)`. Two cautions: it is reflective and slow, so keep it out of hot paths and favor it in tests; and it treats a nil slice and an empty non-nil slice as **different**, which surprises people comparing JSON round-trips."
+        }
+      ]
+    },
+    {
+      "id": "embedding",
+      "title": "Embedding is not inheritance",
+      "brief": "Declare a field with a type and no name and you have **embedded** it. Its methods and fields are **promoted**: you can call them on the outer type directly.\n\nIt looks like inheritance and is not. There is no virtual dispatch. A method on the embedded type that calls another method gets the **embedded type's** version, never an override on the outer type. Promotion is a compile-time shorthand for `outer.Inner.Method()`, nothing more.\n\nEmbedding an exported type also exports its methods. Embedding `sync.Mutex` puts `Lock()` and `Unlock()` on your public API, which is usually not what you meant.",
+      "examples": [
+        {
+          "label": "Promotion",
+          "lang": "go",
+          "code": "type Base struct{ ID string }\n\nfunc (b Base) Describe() string { return \"base \" + b.ID }\n\ntype Job struct {\n\tBase            // embedded: no field name\n\tName string\n}\n\nj := Job{Base: Base{ID: \"7\"}, Name: \"sync\"}\nj.ID          // \"7\"        - promoted field\nj.Describe()  // \"base 7\"   - promoted method\nj.Base.ID     // the long form, always available",
+          "note": "This is how `http.ServeMux` and most middleware get composed, and how a type picks up `io.Reader` behavior by embedding something that already has it."
+        },
+        {
+          "label": "Named field vs embedded, for a mutex",
+          "lang": "go",
+          "code": "type A struct {\n\tsync.Mutex        // embedded: A.Lock() is PUBLIC\n\tn int\n}\n\ntype B struct {\n\tmu sync.Mutex     // named: callers cannot lock it\n\tn  int\n}",
+          "note": "The standard library embeds it in a few places on purpose. For your own types, a named `mu` field is the safer default."
+        }
+      ],
+      "items": [
+        {
+          "id": "promotion",
+          "type": "mcq",
+          "prompt": "`Job` embeds `Base`, which has a field `ID`. Which of these compile?",
+          "choices": [
+            "Both `j.ID` and `j.Base.ID`",
+            "Only `j.Base.ID` — promotion applies to methods, not fields",
+            "Only `j.ID` — the embedded name is not accessible",
+            "Neither unless Job declares its own ID field"
+          ],
+          "answer": 0,
+          "explain": "Both. Promotion covers fields and methods, and the long form always remains. If `Job` declared its own `ID`, the outer one would win and `j.Base.ID` would be the only way to reach the inner — shadowing, the same idea as with variables."
+        },
+        {
+          "id": "no-override",
+          "type": "mcq",
+          "prompt": "`Base.Describe()` calls `b.Label()`. `Job` embeds `Base` and defines its own `Label()`. Which `Name()` runs when you call `job.Describe()`?",
+          "choices": [
+            "Base's — there is no virtual dispatch, so the embedded method never sees Job",
+            "Job's — the outer type's method overrides the embedded one",
+            "Job's, but only if the method has a pointer receiver",
+            "It does not compile; the method name is ambiguous"
+          ],
+          "answer": 0,
+          "explain": "`Base`'s. The receiver inside `Describe` is a `Base` and it knows nothing about any type embedding it. This is the sharpest difference from inheritance, and it bites people porting a template-method pattern from Java or Python. To get polymorphism in Go you pass an **interface**, not an embedded struct.",
+          "tag": "mental model"
+        },
+        {
+          "id": "selector-depth",
+          "type": "order",
+          "prompt": "`job.Thing` — put the steps Go takes to resolve that name in order.",
+          "steps": [
+            "Look for Thing declared directly on Job",
+            "If it is not there, look one level in, at the types Job embeds",
+            "If exactly one embedded type has it at that depth, promote it",
+            "If two embedded types have it at the same depth, the selector is ambiguous and it is a compile error"
+          ],
+          "explain": "Shallowest wins, and a tie is an error rather than a choice. That is the whole mechanism: a field on the outer type shadows a promoted one, and embedding two types that both have `Close()` compiles happily until the day you actually call `x.Close()`. Writing `x.Inner.Close()` is how you break the tie."
+        },
+        {
+          "id": "embed-mutex",
+          "type": "mcq",
+          "prompt": "What does embedding `sync.Mutex` into your exported struct do to its API?",
+          "choices": [
+            "It promotes Lock and Unlock, so any caller can lock your type",
+            "Nothing; promoted methods stay package-private",
+            "It makes the struct uncopyable, enforced by the compiler",
+            "It is required for the mutex to protect the other fields"
+          ],
+          "answer": 0,
+          "explain": "`Lock()` and `Unlock()` become part of your public API, and callers can hold your lock — or deadlock you. Use a named `mu sync.Mutex` field unless you specifically want to expose locking. Note too that embedding a mutex makes the struct unsafe to copy, which `go vet`'s copylocks check will tell you about."
+        },
+        {
+          "id": "embed-interface-multi",
+          "type": "multi",
+          "prompt": "`type Service struct { io.Reader }` — embedding an *interface* rather than a struct. Which are true?",
+          "choices": [
+            "Service satisfies io.Reader, because Read is promoted",
+            "The embedded Reader is nil until you assign one",
+            "Calling Read on a Service with a nil embedded Reader panics",
+            "It does not compile; only structs can be embedded"
+          ],
+          "answers": [
+            0,
+            1,
+            2
+          ],
+          "explain": "All but the last — interfaces can be embedded, and it is a genuinely useful trick: your type satisfies the interface immediately while implementing only the methods it wants to change, delegating the rest. The cost is that the zero value is a nil interface and every unimplemented method panics at runtime instead of failing to compile."
+        }
+      ]
+    }
+  ]
+}

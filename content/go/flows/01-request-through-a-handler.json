@@ -1,0 +1,146 @@
+{
+  "id": "request-through-a-handler",
+  "title": "One request through a Go service, and the four things that go wrong",
+  "subtitle": "Goroutines per connection, unexported fields, value receivers, and a nil map",
+  "minutes": 9,
+  "scenario": "You have a 40-line Go service that takes a JSON report and counts it. It compiles cleanly. `go test` passes. You deploy it, send one request, and get an empty reply and a dropped connection.\n\nNothing here is exotic. Every one of the four bugs is something Go lets you write without a word of complaint, and each one is a rule worth knowing on its own. Follow one request through and you will have met most of what makes Go behave the way it does.",
+  "concepts": [
+    "go/values/zero-values",
+    "go/collections/maps",
+    "go/structs/receivers",
+    "go/structs/exported"
+  ],
+  "steps": [
+    {
+      "actor": "the code",
+      "title": "What you deployed",
+      "body": "Read it before going on. Everything that follows is already on this page — there is no hidden file and no framework.\n\nFour things in here will each cost you something. If you can spot them now, the rest of this walkthrough is a victory lap.",
+      "code": {
+        "lang": "go",
+        "label": "main.go",
+        "text": "package main\n\nimport (\n\t\"encoding/json\"\n\t\"log\"\n\t\"net/http\"\n)\n\ntype Report struct {\n\tService string `json:\"service\"`\n\tcount   int    `json:\"count\"`\n}\n\ntype Store struct {\n\ttotal int\n\tseen  map[string]int\n}\n\nfunc (s Store) Touch(name string) {\n\ts.total++\n\ts.seen[name]++\n}\n\nvar store Store\n\nfunc handle(w http.ResponseWriter, r *http.Request) {\n\tvar rep Report\n\tif err := json.NewDecoder(r.Body).Decode(&rep); err != nil {\n\t\thttp.Error(w, err.Error(), http.StatusBadRequest)\n\t\treturn\n\t}\n\tstore.Touch(rep.Service)\n\tjson.NewEncoder(w).Encode(rep)\n}\n\nfunc main() {\n\thttp.HandleFunc(\"/report\", handle)\n\tlog.Fatal(http.ListenAndServe(\":8080\", nil))\n}"
+      },
+      "watch": "`go build` accepts all of this. So does the compiler's type checker. Go's compile-time strictness is about *types*, not about whether your program is sensible."
+    },
+    {
+      "actor": "net/http",
+      "title": "The server starts handing out goroutines",
+      "body": "`ListenAndServe` blocks forever in `main`, accepting connections. For **each accepted connection** it starts a new goroutine and runs your handler there.\n\nThis is the single most important thing about writing Go services: your handler is not called one at a time. Any state it touches — like that package-level `store` — is touched concurrently.",
+      "ask": {
+        "prompt": "50 clients each open a connection and send a request. How many goroutines is your handler running in?",
+        "choices": [
+          "50 — the server runs a goroutine per connection",
+          "1 — handlers are serialized unless you start goroutines yourself",
+          "As many as GOMAXPROCS, which defaults to the number of CPUs",
+          "50, but they run one at a time because Go has a global interpreter lock"
+        ],
+        "answer": 0,
+        "explain": "A goroutine per connection, so 50 copies of your handler running at once. Go has no global lock — `GOMAXPROCS` caps how many run *in parallel* on CPU, not how many exist. Two consequences: shared state needs a mutex, and a goroutine that blocks forever is a leak you pay for per connection."
+      },
+      "watch": "GOMAXPROCS caps how many goroutines run on CPU at one instant, not how many can exist. Since Go 1.25 it also respects the cgroup CPU limit, which is the Kubernetes CPU *limit* — so a pod with a low limit now gets a correspondingly low default."
+    },
+    {
+      "actor": "encoding/json",
+      "title": "Decoding into a struct that is half-visible",
+      "body": "The client sends `{\"service\":\"billing\",\"count\":7}`. `Decode` fills `rep` by **reflection**: it looks at the struct's fields at runtime and assigns the ones it can.\n\n`Service` starts with a capital letter, so it is exported and reflection can set it. `count` starts with a lowercase letter.",
+      "code": {
+        "lang": "bash",
+        "label": "the request",
+        "text": "$ curl -s -X POST localhost:8080/report \\\n    -d '{\"service\":\"billing\",\"count\":7}'"
+      },
+      "ask": {
+        "prompt": "After Decode returns with a nil error, what is in rep.count?",
+        "choices": [
+          "0 — json cannot set unexported fields, and says nothing about it",
+          "7 — the `json:\"count\"` tag tells it which field to fill",
+          "0, and Decode returns an error about the unexported field",
+          "7, because reflection can reach unexported fields within the same package"
+        ],
+        "answer": 0,
+        "explain": "`0`, silently. Reflection refuses to *set* unexported fields even inside the same package, so `encoding/json` skips them entirely — the tag is dead decoration. No error, no warning at runtime. The capital letter is not a style convention in Go; it is the access modifier, and it is the only one."
+      }
+    },
+    {
+      "actor": "the rule",
+      "title": "Capital letter means exported, everywhere",
+      "body": "There is no `public` or `private` keyword. An identifier starting with an uppercase letter is visible outside its package; anything else is not. It applies uniformly to types, functions, methods, struct fields and constants.\n\n`encoding/json`, `database/sql`, YAML libraries, `fmt`'s `%+v` — every library that inspects your data at runtime is bound by this. A field you did not capitalize is invisible to all of them.",
+      "watch": "`go vet` catches exactly this case: it reports a struct field that carries a json tag but is not exported. Worth wiring into CI — the compiler will never tell you."
+    },
+    {
+      "actor": "your handler",
+      "title": "Touch() is called on a copy",
+      "body": "`func (s Store) Touch(...)` has a **value receiver**: `s` is a fresh copy of `store`, made at call time. `s.total++` increments the copy's field, and the copy is discarded when `Touch` returns.\n\nA pointer receiver — `func (s *Store) Touch(...)` — would have operated on the original.",
+      "ask": {
+        "prompt": "Ignore the map for a second. After a thousand successful requests, what is store.total?",
+        "choices": [
+          "0 — every call incremented a throwaway copy",
+          "1000 — methods on a struct mutate the struct",
+          "1000, because store is a package-level variable rather than a local",
+          "Somewhere under 1000, since concurrent increments get lost to races"
+        ],
+        "answer": 0,
+        "explain": "Zero. The receiver is copied on every call, so a thousand increments land on a thousand corpses. This is the most common Go bug there is, and nothing flags it. Rule of thumb: if a method changes the receiver, or the struct is big, or *any* method on the type needs a pointer, use a pointer receiver for all of them."
+      }
+    },
+    {
+      "actor": "the subtlety",
+      "title": "Why the map would have been shared anyway",
+      "body": "Here is the part that makes value receivers genuinely confusing.\n\nCopying a `Store` copies two things: an `int`, and a **map header**. The header is a small descriptor pointing at the real hash table. Copying it gives you a second descriptor pointing at the *same* table.\n\nSo `s.total++` is lost, but `s.seen[name]++` would have been visible to everyone — through a value receiver, on a copy. Slices, maps, channels and pointers all behave this way: the copy is shallow, and what it points at is shared.",
+      "watch": "This is why \"value receiver means it can't mutate anything\" is wrong, and why the fix for a lost update is never \"it's a value type, so I'll copy harder\"."
+    },
+    {
+      "actor": "the runtime",
+      "title": "store.seen was never made",
+      "body": "`var store Store` gives every field its **zero value**. For an `int` that is `0`; for a map it is `nil`. Not an empty map — nil.\n\nReading a nil map is legal and returns the zero value. Writing to one is not.",
+      "ask": {
+        "prompt": "s.seen[name]++ runs against a nil map inside an http handler. What does the client see?",
+        "choices": [
+          "The connection is closed with no response; the server stays up",
+          "A 500 Internal Server Error with an empty body",
+          "The whole process exits — an unrecovered panic kills the program",
+          "A 200 with an empty JSON object, since the panic happened after the header"
+        ],
+        "answer": 0,
+        "explain": "`net/http` recovers panics from handler goroutines, so the process survives — but all it does is log the panic and **close the connection**. Nothing writes a status, so the client gets a dropped connection, not a tidy 500. That is why this shows up as EOF or 'connection reset' in the caller and looks like a network fault. The panic is only in your server's log."
+      }
+    },
+    {
+      "actor": "09:11:04",
+      "title": "Reading the panic in the log",
+      "body": "The server logs the panic and the stack of the goroutine that died. Read it bottom-up: `main.handle` called `main.Store.Touch`, which panicked.\n\n`goroutine 21 [running]` is the one that blew up. Frames in `/usr/local/go/src/` are the standard library — your code is the `/app/main.go` lines, and that is where to look first.",
+      "code": {
+        "lang": "log",
+        "label": "stderr",
+        "text": "2026/03/02 09:11:04 http: panic serving 127.0.0.1:52118: assignment to entry in nil map\ngoroutine 21 [running]:\nnet/http.(*conn).serve.func1()\n        /usr/local/go/src/net/http/server.go:...\npanic({...})\n        /usr/local/go/src/runtime/panic.go:...\nmain.Store.Touch(...)\n        /app/main.go:24\nmain.handle({...}, ...)\n        /app/main.go:33",
+        "note": "Stdlib frames trimmed; the shape is what matters."
+      },
+      "ask": {
+        "prompt": "Same nil map write, but in a goroutine you started yourself with `go doWork()`. What happens?",
+        "choices": [
+          "The entire process exits — there is no handler to recover it",
+          "The same thing: net/http recovers it and keeps serving",
+          "Only that goroutine dies; the others carry on",
+          "The panic propagates to whichever goroutine started it"
+        ],
+        "answer": 0,
+        "explain": "The process dies. `recover` only works in the goroutine that panicked, and `net/http`'s recover sits on *its* goroutines, not yours. A panic in a goroutine you spawned takes the whole program down with it. If you start a goroutine that does real work, it needs its own `defer func() { recover() }()` — or it must not be able to panic."
+      }
+    },
+    {
+      "actor": "the fix",
+      "title": "Four edits, and what each one was for",
+      "body": "- **`count` → `Count`.** Exported, so reflection can see it. The tag now means something.\n- **`func (s *Store)`.** Pointer receiver, so `total` survives the call.\n- **`store = Store{seen: map[string]int{}}`.** A map must be made before it is written to; `var` alone gives you nil.\n- **A `sync.Mutex` around `seen`.** Handlers run concurrently, and a map is not safe for concurrent writes — without it you get `fatal error: concurrent map writes`, which is *not* recoverable.\n\nThree of the four were invisible to the compiler and to the tests.",
+      "code": {
+        "lang": "go",
+        "label": "the corrected core",
+        "text": "type Report struct {\n\tService string `json:\"service\"`\n\tCount   int    `json:\"count\"`\n}\n\ntype Store struct {\n\tmu    sync.Mutex\n\ttotal int\n\tseen  map[string]int\n}\n\nfunc (s *Store) Touch(name string) {\n\ts.mu.Lock()\n\tdefer s.mu.Unlock()\n\ts.total++\n\ts.seen[name]++\n}\n\nvar store = Store{seen: make(map[string]int)}"
+      }
+    }
+  ],
+  "takeaways": [
+    "A capital letter is Go's only access modifier, and every reflection-based library obeys it.",
+    "A value receiver copies the struct; the copy's fields are lost, but anything it points at is still shared.",
+    "The zero value of a map, slice, channel, pointer or interface is nil — reading is fine, writing to a nil map panics.",
+    "On HTTP/1.1, net/http recovers a panicking handler by logging it and dropping the connection — HTTP/2 resets just that stream; a panic in a goroutine you started yourself kills the process."
+  ]
+}
